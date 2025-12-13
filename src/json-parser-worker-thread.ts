@@ -23,11 +23,9 @@ const BUF_SZ = 128 * 1024;  // Larger buffer for better I/O performance
 const buf = Buffer.allocUnsafe(BUF_SZ);
 let pending = '';
 
-// Pre-allocate batch arrays to reduce GC pressure
+// Batch arrays - don't pre-allocate length to avoid undefined values
 const batch: any[] = [];
-batch.length = opts.batchSize || 64;
 const nonjsonBatch: string[] = [];
-nonjsonBatch.length = opts.batchSize || 64;
 
 function flushBatch() {
   if (batch.length === 0) return;
