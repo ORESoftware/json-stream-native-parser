@@ -91,6 +91,7 @@ class JsonParserNativeReadable extends stream.Readable {
   private endAfterDrain = false;
   private destroyedByUser = false;
   private yielding = false;
+  private drainScheduled = false;
   private yieldEvery = 0;
 
   constructor(fd: number, opts: JsonParserNativeOpts = {}) {
@@ -113,7 +114,7 @@ class JsonParserNativeReadable extends stream.Readable {
 
       if (msg.type === 'data') {
         this.pending.push(...msg.batch);
-        this.drain();
+        this.scheduleDrain();
         return;
       }
 
@@ -139,7 +140,7 @@ class JsonParserNativeReadable extends stream.Readable {
         } satisfies NativeParserStats);
 
         this.endAfterDrain = true;
-        this.drain();
+        this.scheduleDrain();
       }
     });
   }
@@ -196,6 +197,17 @@ class JsonParserNativeReadable extends stream.Readable {
 
   _read() {
     this.drain();
+  }
+
+  private scheduleDrain() {
+    if (this.drainScheduled) {
+      return;
+    }
+    this.drainScheduled = true;
+    setImmediate(() => {
+      this.drainScheduled = false;
+      this.drain();
+    });
   }
 
   _destroy(err: Error | null, cb: (error?: Error | null) => void) {
