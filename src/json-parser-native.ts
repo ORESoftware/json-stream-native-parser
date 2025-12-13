@@ -20,6 +20,15 @@ export interface JsonParserNativeOpts {
   emitNonJSON?: boolean;
   trackBytesRead?: boolean;
   trackBytesWritten?: boolean;
+
+  /**
+   * Yield back to the event loop after pushing N parsed items.
+   * This improves responsiveness when parsing huge streams while the main thread has other work to do.
+   *
+   * - 0/undefined: no yielding (max throughput, can monopolize the event loop)
+   * - >= 1: push at most N items per tick, then `setImmediate()` to continue
+   */
+  yieldEvery?: number;
 }
 
 export interface NativeParserStats {
@@ -81,11 +90,14 @@ class JsonParserNativeReadable extends stream.Readable {
   private pending: any[] = [];
   private endAfterDrain = false;
   private destroyedByUser = false;
+  private yielding = false;
+  private yieldEvery = 0;
 
   constructor(fd: number, opts: JsonParserNativeOpts = {}) {
     super({objectMode: true, highWaterMark: 16});
 
     const binding = loadNativeBinding();
+    this.yieldEvery = Math.max(0, Number(opts.yieldEvery || 0) | 0);
 
     const nativeOpts = {
       ...opts,
@@ -152,12 +164,29 @@ class JsonParserNativeReadable extends stream.Readable {
   }
 
   private drain() {
-    while (this.pending.length > 0) {
+    if (this.yielding) {
+      return;
+    }
+
+    const limit = this.yieldEvery > 0 ? this.yieldEvery : Number.POSITIVE_INFINITY;
+    let pushed = 0;
+
+    while (this.pending.length > 0 && pushed < limit) {
       const ok = this.push(this.pending[0]);
       if (!ok) {
         return;
       }
       this.pending.shift();
+      pushed++;
+    }
+
+    if (this.pending.length > 0 && this.yieldEvery > 0) {
+      this.yielding = true;
+      setImmediate(() => {
+        this.yielding = false;
+        this.drain();
+      });
+      return;
     }
 
     if (this.endAfterDrain) {
