@@ -53,12 +53,6 @@ static napi_value make_uint32(napi_env env, uint32_t n) {
   return out;
 }
 
-static napi_value make_int64_as_number(napi_env env, int64_t n) {
-  napi_value out;
-  napi_create_double(env, static_cast<double>(n), &out);
-  return out;
-}
-
 static napi_value make_double(napi_env env, double d) {
   napi_value out;
   napi_create_double(env, d, &out);
@@ -412,9 +406,16 @@ static napi_value jvalue_object_to_js(napi_env env, const JValue& v) {
   napi_value obj;
   napi_create_object(env, &obj);
   for (const auto& kv : v.obj) {
-    napi_value key = make_string(env, kv.first);
     napi_value val = jvalue_to_js(env, kv.second);
-    napi_set_property(env, obj, key, val);
+    // Avoid allocating a JS string for the key in the common case.
+    // NOTE: napi_set_named_property requires a NUL-terminated UTF-8 C string.
+    // JSON keys can technically contain \u0000; fallback to set_property in that rare case.
+    if (kv.first.find('\0') == std::string::npos) {
+      napi_set_named_property(env, obj, kv.first.c_str(), val);
+    } else {
+      napi_value key = make_string(env, kv.first);
+      napi_set_property(env, obj, key, val);
+    }
   }
   return obj;
 }

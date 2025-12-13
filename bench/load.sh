@@ -61,11 +61,28 @@ for i in $(seq 1 "$ITERS"); do
   native_lag+=("$lag")
 done
 
+echo
+echo "Worker under load (LOAD=$LOAD):"
+worker_ms=()
+worker_lag=()
+for i in $(seq 1 "$ITERS"); do
+  out="$(run_consumer "$ROOT/bench/load-consumer-worker.mjs")"
+  ms="$(node -p "JSON.parse(process.argv[1]).ms" "$out")"
+  lag="$(node -p "JSON.parse(process.argv[1]).maxLagMs" "$out")"
+  count="$(node -p "JSON.parse(process.argv[1]).count" "$out")"
+  echo "  iter $i/$ITERS: ${ms} ms (count=$count, maxLagMs=$lag)"
+  worker_ms+=("$ms")
+  worker_lag+=("$lag")
+done
+
 ts_avg="$(printf "%s\n" "${ts_ms[@]}" | avg_ms)"
 native_avg="$(printf "%s\n" "${native_ms[@]}" | avg_ms)"
+worker_avg="$(printf "%s\n" "${worker_ms[@]}" | avg_ms)"
 ts_lag_avg="$(printf "%s\n" "${ts_lag[@]}" | avg_ms)"
 native_lag_avg="$(printf "%s\n" "${native_lag[@]}" | avg_ms)"
+worker_lag_avg="$(printf "%s\n" "${worker_lag[@]}" | avg_ms)"
 speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$native_avg")"
+worker_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$worker_avg")"
 
 echo
 echo "N=$N, ITERS=$ITERS, LOAD=$LOAD"
@@ -74,5 +91,8 @@ echo "native avg ms:     $native_avg"
 echo "throughput speed:  ${speedup}x (higher is better)"
 echo "ts avg maxLagMs:   $ts_lag_avg"
 echo "native avg maxLagMs: $native_lag_avg"
+echo "worker avg ms:     $worker_avg"
+echo "worker throughput speed: ${worker_speedup}x (higher is better)"
+echo "worker avg maxLagMs: $worker_lag_avg"
 
 
