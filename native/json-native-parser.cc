@@ -521,16 +521,6 @@ static napi_value new_handle_instance(napi_env env, HandleWrap* hw) {
 static napi_value jvalue_object_to_js(napi_env env, const JValue& v) {
   napi_value obj;
   napi_create_object(env, &obj);
-<<<<<<< HEAD
-  
-  // Use napi_set_property for each key-value pair to ensure properties are enumerable
-  // This is the standard way to create plain JS objects with enumerable properties
-  // napi_set_property creates enumerable, writable, configurable properties by default
-  for (const auto& kv : v.obj) {
-    napi_value key = make_string(env, kv.first);
-    napi_value val = jvalue_to_js(env, kv.second);
-    napi_set_property(env, obj, key, val);
-=======
   for (const auto& kv : v.obj) {
     napi_value val = jvalue_to_js(env, kv.second);
     // Avoid allocating a JS string for the key in the common case.
@@ -542,7 +532,6 @@ static napi_value jvalue_object_to_js(napi_env env, const JValue& v) {
       napi_value key = make_string(env, kv.first);
       napi_set_property(env, obj, key, val);
     }
->>>>>>> d7e827c1572db401e656b5939a65dda1cf0c0b24
   }
   
   return obj;
@@ -624,13 +613,6 @@ static void attach_metadata(
 
 // We need ParserInstance inside TSFN callback for metadata/wrap behavior.
 // N-API gives us a `context` pointer. We'll use it.
-
-static void finalize_external_buffer(napi_env env, void* data, void* /*hint*/) {
-  (void)env;
-  // Data was allocated with `new[]` (via std::unique_ptr<uint8_t[]>), and ownership is transferred
-  // to the JS Buffer finalizer via `release()`.
-  delete[] static_cast<uint8_t*>(data);
-}
 
 static void call_js_from_tsfn_with_instance(napi_env env, napi_value js_cb, void* context, void* data) {
   auto* inst = static_cast<ParserInstance*>(context);
