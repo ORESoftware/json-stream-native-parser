@@ -356,6 +356,11 @@ struct ParsedItem {
   std::unique_ptr<uint8_t[]> external_data;  // Owned buffer for external buffer
 };
 
+static void finalize_external_buffer(napi_env /*env*/, void* data, void* /*hint*/) {
+  // Matches allocation with std::make_unique<uint8_t[]>() which uses new[]
+  delete[] reinterpret_cast<uint8_t*>(data);
+}
+
 struct BatchMsg {
   enum class Kind { Data, NonJson, End, Error } kind = Kind::Data;
   std::vector<ParsedItem> items;
