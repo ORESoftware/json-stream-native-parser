@@ -22,6 +22,7 @@
     "build:esm": "tsc -p tsconfig.json",
     "build:cjs": "tsc -p tsconfig.cjs.json && node scripts/prep-cjs.mjs",
     "build:native": "node-gyp rebuild",
+    "postinstall": "node -e \"if(process.env.JSON_NATIVE_PARSER_SKIP_BUILD){process.exit(0)};const cp=require('node:child_process');const path=require('node:path');let nodeGyp='';const npmExec=process.env.npm_execpath||'';if(npmExec){nodeGyp=path.join(path.dirname(npmExec),'..','node_modules','node-gyp','bin','node-gyp.js')}if(!nodeGyp){console.error('json-native-stream-parser: could not locate node-gyp via npm_execpath; set JSON_NATIVE_PARSER_SKIP_BUILD=1 to skip');process.exit(1)};const r=cp.spawnSync(process.execPath,[nodeGyp,'rebuild'],{stdio:'inherit'});process.exit(r.status||0)\"",
     "bench": "npm run build && node bench/run.mjs",
     "bench:inproc": "npm run build && node bench/run-inproc.mjs",
     "bench:sh": "npm run build && bash bench/bench.sh",

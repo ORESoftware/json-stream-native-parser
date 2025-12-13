@@ -144,7 +144,13 @@ If you already have a **file descriptor** (for example from `fs.openSync()` or p
 Build the native addon:
 
 ```bash
-node-gyp rebuild
+npm run build:native
+```
+
+It also builds automatically on install via `postinstall`. To skip native compilation:
+
+```bash
+JSON_NATIVE_PARSER_SKIP_BUILD=1 npm i
 ```
 
 Usage:
