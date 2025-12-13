@@ -27,6 +27,7 @@
     "bench:sh": "npm run build && bash bench/bench.sh",
     "bench:latency": "npm run build && bash bench/latency.sh",
     "bench:load": "npm run build && bash bench/load.sh",
+    "bench:compare-load": "npm run build && node bench/compare-load.mjs",
     "test": "npm run build && node test/run.js"
   },
   "repository": {

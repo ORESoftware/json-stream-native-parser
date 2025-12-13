@@ -124,13 +124,24 @@ class JsonParserNativeReadable extends stream.Readable {
     super({objectMode: true, highWaterMark: 16});
 
     const binding = loadNativeBinding();
-    this.yieldEvery = Math.max(0, Number(opts.yieldEvery || 0) | 0);
-    const emitBatches = Boolean(opts.emitBatches);
-    this.closeFdOnEnd = Boolean(opts.closeFdOnEnd);
+
+    // Native-optimized defaults:
+    // - batchSize: amortize TSFN callback overhead
+    // - yieldEvery: keep event loop responsive under load while still emitting items individually
+    const normalized: JsonParserNativeOpts = {
+      delimiter: opts.delimiter ?? '\n',
+      batchSize: (opts.batchSize ?? 256),
+      yieldEvery: (opts.yieldEvery ?? 8192),
+      ...opts
+    };
+
+    this.yieldEvery = Math.max(0, Number(normalized.yieldEvery || 0) | 0);
+    const emitBatches = Boolean(normalized.emitBatches);
+    this.closeFdOnEnd = Boolean(normalized.closeFdOnEnd);
     this.fdToClose = fdToClose;
 
     const nativeOpts = {
-      ...opts,
+      ...normalized,
       // pass symbols so native can attach metadata with the *same* keys as the TS parser
       rawStringSymbol: RawStringSymbol,
       rawJsonBytesSymbol: RawJSONBytesSymbol
