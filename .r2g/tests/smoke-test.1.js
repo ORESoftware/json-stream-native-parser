@@ -10,7 +10,7 @@ process.on('unhandledRejection', (reason, p) => {
   process.exit(1);
 });
 
-console.log('Running test', __filename);
+console.log('Running test', import.meta.url);
 
 import {JSONParser} from '@oresoftware/json-native-stream-parser';
 

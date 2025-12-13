@@ -12,7 +12,7 @@ process.on('unhandledRejection', (reason, p) => {
 
 import {JSONParser} from '@oresoftware/json-native-stream-parser';
 
-console.log('Running test', __filename);
+console.log('Running test', import.meta.url);
 
 const k = cp.spawn('bash');
 const foo = 'medicine';
