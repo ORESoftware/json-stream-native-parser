@@ -87,7 +87,9 @@ function loadNativeBinding(): any {
 
 class JsonParserNativeReadable extends stream.Readable {
   private native: any;
-  private pending: any[] = [];
+  private pendingBatches: any[][] = [];
+  private batchIdx = 0;
+  private itemIdx = 0;
   private endAfterDrain = false;
   private destroyedByUser = false;
   private yielding = false;
@@ -113,7 +115,8 @@ class JsonParserNativeReadable extends stream.Readable {
       }
 
       if (msg.type === 'data') {
-        this.pending.push(...msg.batch);
+        // Avoid spreading into a single array (alloc/copy). Keep batches as-is and drain via indices.
+        this.pendingBatches.push(msg.batch);
         this.scheduleDrain();
         return;
       }
@@ -172,22 +175,36 @@ class JsonParserNativeReadable extends stream.Readable {
     const limit = this.yieldEvery > 0 ? this.yieldEvery : Number.POSITIVE_INFINITY;
     let pushed = 0;
 
-    while (this.pending.length > 0 && pushed < limit) {
-      const ok = this.push(this.pending[0]);
+    while (this.batchIdx < this.pendingBatches.length && pushed < limit) {
+      const batch = this.pendingBatches[this.batchIdx];
+      if (this.itemIdx >= batch.length) {
+        this.batchIdx++;
+        this.itemIdx = 0;
+        continue;
+      }
+
+      const ok = this.push(batch[this.itemIdx]);
       if (!ok) {
         return;
       }
-      this.pending.shift();
+      this.itemIdx++;
       pushed++;
     }
 
-    if (this.pending.length > 0 && this.yieldEvery > 0) {
+    if (this.batchIdx < this.pendingBatches.length && this.yieldEvery > 0) {
       this.yielding = true;
       setImmediate(() => {
         this.yielding = false;
         this.drain();
       });
       return;
+    }
+
+    // If we drained everything, reset indices/queue to keep memory bounded.
+    if (this.batchIdx >= this.pendingBatches.length) {
+      this.pendingBatches = [];
+      this.batchIdx = 0;
+      this.itemIdx = 0;
     }
 
     if (this.endAfterDrain) {

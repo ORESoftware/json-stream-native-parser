@@ -26,6 +26,7 @@
     "bench:inproc": "npm run build && node bench/run-inproc.mjs",
     "bench:sh": "npm run build && bash bench/bench.sh",
     "bench:latency": "npm run build && bash bench/latency.sh",
+    "bench:load": "npm run build && bash bench/load.sh",
     "test": "npm run build && node test/run.js"
   },
   "repository": {
