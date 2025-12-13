@@ -5,7 +5,12 @@ import * as assert from 'node:assert/strict';
 
 import {RawStringSymbol, RawJSONBytesSymbol, JSONBytesSymbol} from './symbols.js';
 export {RawStringSymbol, RawJSONBytesSymbol, JSONBytesSymbol};
-export {createJsonParserNativeFromFd} from './json-parser-native.js';
+export {
+  createJsonParserNativeFromFd,
+  createJsonParserNativeFromStdin,
+  createJsonParserNativeFromPath,
+  createJsonParserNativeFromSocket
+} from './json-parser-native.js';
 export type {JsonParserNativeOpts, NativeParserStats} from './json-parser-native.js';
 export {createJsonParserWorkerFromFd} from './json-parser-worker.js';
 export type {JsonParserWorkerOpts, WorkerParserStats} from './json-parser-worker.js';

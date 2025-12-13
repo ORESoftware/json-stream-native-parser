@@ -22,14 +22,14 @@
     "build": "npm run build:esm && npm run build:cjs",
     "build:esm": "tsc -p tsconfig.json",
     "build:cjs": "tsc -p tsconfig.cjs.json && node scripts/prep-cjs.mjs",
-    "build:native": "node scripts/build-native.mjs",
-    "build:native:cmake": "npx cmake-js compile",
-    "build:native:gyp": "node-gyp rebuild",
-    "postinstall": "node scripts/build-native.mjs || echo '⚠️  Native addon build failed - package will work but native parser unavailable. Install build tools (cmake-js, node-gyp-build, or node-gyp) to enable native parser.'",
+    "build:native": "node -e \"const cp=require('node:child_process');const path=require('node:path');let nodeGyp='';const npmExec=process.env.npm_execpath||'';if(npmExec){nodeGyp=path.join(path.dirname(npmExec),'..','node_modules','node-gyp','bin','node-gyp.js')}if(!nodeGyp){console.error('json-native-stream-parser: could not locate node-gyp via npm_execpath');process.exit(1)};const r=cp.spawnSync(process.execPath,[nodeGyp,'rebuild'],{stdio:'inherit'});process.exit(r.status||0)\"",
+    "postinstall": "node -e \"if(process.env.JSON_NATIVE_PARSER_SKIP_BUILD){process.exit(0)};const cp=require('node:child_process');const path=require('node:path');let nodeGyp='';const npmExec=process.env.npm_execpath||'';if(npmExec){nodeGyp=path.join(path.dirname(npmExec),'..','node_modules','node-gyp','bin','node-gyp.js')}if(!nodeGyp){console.error('json-native-stream-parser: could not locate node-gyp via npm_execpath; set JSON_NATIVE_PARSER_SKIP_BUILD=1 to skip');process.exit(1)};const r=cp.spawnSync(process.execPath,[nodeGyp,'rebuild'],{stdio:'inherit'});process.exit(r.status||0)\"",
     "bench": "npm run build && node bench/run.mjs",
     "bench:inproc": "npm run build && node bench/run-inproc.mjs",
     "bench:sh": "npm run build && bash bench/bench.sh",
     "bench:latency": "npm run build && bash bench/latency.sh",
+    "bench:load": "npm run build && bash bench/load.sh",
+    "bench:compare-load": "npm run build && node bench/compare-load.mjs",
     "test": "npm run build && node test/run.js"
   },
   "repository": {

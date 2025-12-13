@@ -165,29 +165,53 @@ child.stdout
   });
 ```
 
+### Other options
+
+1. `delayEvery`: integer
+
+> Every x chunks, will use `setImmediate()` to delay processing; good for not blocking the event loop too much.
+
+2. `emitNonJSON`: boolean
+
+> If there is a line of input that cannot be JSON parsed, it will be emitted as `"string"`, but it will not be pushed to output.
+
 ### File Descriptor (Native Parser - Direct C++ Access)
 
 The native parser captures the file descriptor **directly in C++**, bypassing Node.js streams. Data flows: **Kernel → C++ background thread → Zero-copy → JS** (no Node.js stream layer).
 
 ```typescript
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import {
   createJsonParserNativeFromFd,
+  createJsonParserNativeFromStdin,
+  createJsonParserNativeFromPath,
+  createJsonParserNativeFromSocket,
   RawStringSymbol,
   RawJSONBytesSymbol
 } from '@oresoftware/json-stream-parser';
 
-const fd = fs.openSync('/path/to/file.jsonl', 'r');
+// 1) From a file path (auto-opens + auto-closes the FD)
+const s1 = createJsonParserNativeFromPath('/path/to/file.jsonl', { delimiter: '\n' });
 
-// Data goes directly to C++ background thread (no Node.js stream overhead)
-const s = createJsonParserNativeFromFd(fd, {
-  delimiter: '\n',
-  batchSize: 2048,  // Larger batches for better performance
-  includeRawString: true,
-  includeByteCount: true,
-  emitNonJSON: true
-  // passRawBuffers: true is the default (can be set to false to use C++ parsing)
-});
+// 2) From stdin (fd=0)
+// IMPORTANT: do not also do `process.stdin.pipe(...)` at the same time.
+const s2 = createJsonParserNativeFromStdin({ delimiter: '\n' });
+
+// 3) From any existing FD you already have
+const fd = fs.openSync('/path/to/file.jsonl', 'r'); // you own this FD
+const s3 = createJsonParserNativeFromFd(fd, { delimiter: '\n', closeFdOnEnd: false, passRawBuffers: true });
+
+// 4) From a TCP socket (net.Socket)
+// IMPORTANT: do not attach 'data' listeners / pipe() this socket in JS at the same time.
+const sock = net.createConnection(6970, 'localhost');
+const s4 = createJsonParserNativeFromSocket(sock, { delimiter: '\n' });
+
+// 5) From a unix domain socket path (net.Socket)
+const usock = net.createConnection({ path: '/tmp/my.sock' });
+const s5 = createJsonParserNativeFromSocket(usock, { delimiter: '\n' });
+
+const s = s1; // pick one of the above
 
 s.on('data', (obj) => {
   // obj is a fully parsed POJO/array/value (nested OK)
@@ -196,16 +220,30 @@ s.on('data', (obj) => {
   console.log('Parsed:', obj);
 });
 
-s.on('string', (line) => {
+// Optional metadata + behavior flags:
+const sWithMeta = createJsonParserNativeFromPath('/path/to/file.jsonl', {
+  delimiter: '\n',
+  batchSize: 64,
+  includeRawString: true,
+  includeByteCount: true,
+  emitNonJSON: true
+});
+
+sWithMeta.on('string', (line) => {
   // only when emitNonJSON: true
   console.log('Non-JSON line:', line);
 });
 
-s.on('stats', (stats) => {
+sWithMeta.on('stats', (stats) => {
   // { bytesRead, bytesWritten, linesOk, linesFailed, ended }
   console.log('Stats:', stats);
 });
 ```
+
+#### Important caveat (sockets / stdin)
+
+When you use `createJsonParserNativeFromStdin()` or `createJsonParserNativeFromSocket()`, **native code reads the FD directly**.
+Do **not** also consume that same stream in JS-land (no `.pipe()`, no `'data'` listeners), or you’ll race for bytes.
 
 ### stdin (Direct C++ Access)
 

@@ -3,12 +3,15 @@
 
 import {createJsonParserWorkerFromFd} from '../dist/main.js';
 
+const batchSize = Number(process.env.BATCH_SIZE || 512);
+const delimiter = '\n';
+
 const t0 = process.hrtime.bigint();
 let count = 0;
 
 const s = createJsonParserWorkerFromFd(0, {
-  delimiter: '\n',
-  batchSize: 512  // Larger batches = fewer postMessage calls = better performance
+  delimiter,
+  batchSize
 });
 
 s.on('data', () => {
@@ -23,6 +26,5 @@ s.on('error', (err) => {
 s.on('end', () => {
   const t1 = process.hrtime.bigint();
   const ms = Number(t1 - t0) / 1e6;
-  process.stdout.write(JSON.stringify({impl: 'worker', count, ms}) + '\n');
+  process.stdout.write(JSON.stringify({impl: 'worker', count, ms, batchSize}) + '\n');
 });
-

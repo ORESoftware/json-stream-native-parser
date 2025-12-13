@@ -32,12 +32,34 @@ export interface JsonParserNativeOpts {
   yieldEvery?: number;
 
   /**
-   * Pass raw JSON strings as Buffer objects instead of parsing in C++.
-   * This reduces main thread work by letting V8's optimized JSON.parse() handle parsing.
-   * Useful when main thread is busy with other work.
-   * 
-   * **Default: true** (optimized mode enabled by default for best performance)
-   * Set to false to use C++ JSON parsing (slower but may be useful for debugging)
+   * If true, the native addon emits lightweight handle objects (NativeJsonHandle)
+   * instead of materializing full JS values immediately.
+   *
+   * Call `.toJS()` on each handle when/if you want the POJO.
+   */
+  lazyHandles?: boolean;
+
+  /**
+   * If true, this Readable emits arrays (batches) instead of individual items.
+   * This reduces per-item stream overhead.
+   */
+  emitBatches?: boolean;
+
+  /**
+   * If true, and this parser opened the FD itself (e.g. from a file path),
+   * it will close the FD when parsing ends or the stream is destroyed.
+   *
+   * Defaults to false (never closes user-provided FDs).
+   */
+  closeFdOnEnd?: boolean;
+
+  /**
+   * If true, native code emits raw JSON bytes as Buffers, and JS parses with `JSON.parse()`.
+   *
+   * This tends to be faster than building POJOs via N-API, because V8's JSON.parse is highly optimized.
+   *
+   * - **Default: true** (optimized mode)
+   * - Set to false to use the C++ JSON parser + N-API object materialization.
    */
   passRawBuffers?: boolean;
 }
@@ -139,33 +161,51 @@ function loadNativeBinding(): any {
 
 class JsonParserNativeReadable extends stream.Readable {
   private native: any;
-  private pending: any[] = [];
+  private pendingBatches: any[][] = [];
+  private batchIdx = 0;
+  private itemIdx = 0;
   private endAfterDrain = false;
   private destroyedByUser = false;
   private yielding = false;
   private drainScheduled = false;
   private yieldEvery = 0;
-  private passRawBuffers: boolean;
-  private wrapMetadata: boolean;
-  private includeRawString: boolean;
-  private includeByteCount: boolean;
-  private emitNonJSON: boolean;
+  private fdToClose: number | null = null;
+  private closeFdOnEnd = false;
+  private passRawBuffers = true;
+  private wrapMetadata = false;
+  private includeRawString = false;
+  private includeByteCount = false;
+  private emitNonJSON = false;
 
-  constructor(fd: number, opts: JsonParserNativeOpts = {}) {
+  constructor(fd: number, opts: JsonParserNativeOpts = {}, fdToClose: number | null = null) {
     super({objectMode: true, highWaterMark: 16});
 
     const binding = loadNativeBinding();
-    this.yieldEvery = Math.max(0, Number(opts.yieldEvery || 0) | 0);
+
+    // Native-optimized defaults:
+    // - batchSize: amortize TSFN callback overhead
+    // - yieldEvery: keep event loop responsive under load while still emitting items individually
+    const normalized: JsonParserNativeOpts = {
+      delimiter: opts.delimiter ?? '\n',
+      batchSize: (opts.batchSize ?? 256),
+      yieldEvery: (opts.yieldEvery ?? 8192),
+      ...opts
+    };
+
+    this.yieldEvery = Math.max(0, Number(normalized.yieldEvery || 0) | 0);
+    const emitBatches = Boolean(normalized.emitBatches);
+    this.closeFdOnEnd = Boolean(normalized.closeFdOnEnd);
+    this.fdToClose = fdToClose;
 
     // Default to optimized mode (passRawBuffers: true) for best performance
-    this.passRawBuffers = opts.passRawBuffers !== undefined ? opts.passRawBuffers : true;
-    this.wrapMetadata = opts.wrapMetadata === true;
-    this.includeRawString = opts.includeRawString === true;
-    this.includeByteCount = opts.includeByteCount === true;
-    this.emitNonJSON = opts.emitNonJSON === true; // Only true if explicitly enabled
+    this.passRawBuffers = normalized.passRawBuffers !== undefined ? Boolean(normalized.passRawBuffers) : true;
+    this.wrapMetadata = normalized.wrapMetadata === true;
+    this.includeRawString = normalized.includeRawString === true;
+    this.includeByteCount = normalized.includeByteCount === true;
+    this.emitNonJSON = normalized.emitNonJSON === true; // Only true if explicitly enabled
 
     const nativeOpts = {
-      ...opts,
+      ...normalized,
       passRawBuffers: this.passRawBuffers,
       // pass symbols so native can attach metadata with the *same* keys as the TS parser
       rawStringSymbol: RawStringSymbol,
@@ -178,20 +218,17 @@ class JsonParserNativeReadable extends stream.Readable {
       }
 
       if (msg.type === 'data') {
-        // If passRawBuffers is enabled, batch contains Buffer objects that need parsing
         if (this.passRawBuffers) {
-          // Optimize: Parse directly, use Buffer's built-in JSON.parse support
-          // V8's JSON.parse can handle Buffer directly in some cases, but we need string
-          // Optimize by reusing string conversion
+          const out: any[] = [];
           for (let i = 0; i < msg.batch.length; i++) {
             const buf = msg.batch[i] as Buffer;
             try {
-              // Try to minimize string allocation - but JSON.parse needs string
-              // Buffer.toString('utf8') is already optimized in V8
               const str = buf.toString('utf8');
               let parsed = JSON.parse(str);
-              
-              // Handle wrapMetadata if requested (same behavior as non-optimized mode)
+
+              // Match TS parser behavior:
+              // - if wrapMetadata: wrap even primitives
+              // - else: only annotate objects/arrays
               if (this.wrapMetadata) {
                 const wrapped: any = { value: parsed };
                 if (this.includeRawString) {
@@ -202,28 +239,37 @@ class JsonParserNativeReadable extends stream.Readable {
                 }
                 parsed = wrapped;
               } else {
-                // Attach metadata directly to parsed object if requested
-                if (this.includeRawString) {
-                  (parsed as any)[RawStringSymbol] = str;
-                }
-                if (this.includeByteCount) {
-                  (parsed as any)[RawJSONBytesSymbol] = buf.length;
+                if (parsed && typeof parsed === 'object') {
+                  if (this.includeRawString) {
+                    (parsed as any)[RawStringSymbol] = str;
+                  }
+                  if (this.includeByteCount) {
+                    (parsed as any)[RawJSONBytesSymbol] = buf.length;
+                  }
                 }
               }
-              
-              this.pending.push(parsed);
-            } catch (err) {
-              // Only emit 'string' event if emitNonJSON is explicitly enabled
-              // When passRawBuffers is true, invalid JSON is passed from native side
-              // and we validate it here with JSON.parse()
+
+              out.push(parsed);
+            } catch {
               if (this.emitNonJSON) {
                 this.emit('string', buf.toString('utf8'));
               }
-              // If emitNonJSON is false, silently skip invalid JSON (same behavior as non-optimized mode)
             }
           }
+
+          if (emitBatches) {
+            this.pendingBatches.push([out]);
+          } else {
+            this.pendingBatches.push(out);
+          }
         } else {
-          this.pending.push(...msg.batch);
+          if (emitBatches) {
+            // Push a whole batch as a single stream item.
+            this.pendingBatches.push([msg.batch]);
+          } else {
+            // Avoid spreading into a single array (alloc/copy). Keep batches as-is and drain via indices.
+            this.pendingBatches.push(msg.batch);
+          }
         }
         this.scheduleDrain();
         return;
@@ -283,27 +329,24 @@ class JsonParserNativeReadable extends stream.Readable {
     const limit = this.yieldEvery > 0 ? this.yieldEvery : Number.POSITIVE_INFINITY;
     let pushed = 0;
 
-    // Optimize: Use index instead of shift() for better performance
-    let startIdx = 0;
-    while (startIdx < this.pending.length && pushed < limit) {
-      const ok = this.push(this.pending[startIdx]);
+    while (this.batchIdx < this.pendingBatches.length && pushed < limit) {
+      const batch = this.pendingBatches[this.batchIdx];
+      if (this.itemIdx >= batch.length) {
+        this.batchIdx++;
+        this.itemIdx = 0;
+        continue;
+      }
+
+      const ok = this.push(batch[this.itemIdx]);
       if (!ok) {
-        // Remove processed items
-        if (startIdx > 0) {
-          this.pending = this.pending.slice(startIdx);
-        }
         return;
       }
-      startIdx++;
+      this.itemIdx++;
       pushed++;
     }
-    
-    // Remove processed items
-    if (startIdx > 0) {
-      this.pending = this.pending.slice(startIdx);
-    }
 
-    if (this.pending.length > 0 && this.yieldEvery > 0) {
+    // If we hit the per-tick limit and still have items left, yield.
+    if (this.batchIdx < this.pendingBatches.length && this.yieldEvery > 0 && pushed >= limit) {
       this.yielding = true;
       setImmediate(() => {
         this.yielding = false;
@@ -312,7 +355,15 @@ class JsonParserNativeReadable extends stream.Readable {
       return;
     }
 
+    // If we drained everything, reset indices/queue to keep memory bounded.
+    if (this.batchIdx >= this.pendingBatches.length) {
+      this.pendingBatches = [];
+      this.batchIdx = 0;
+      this.itemIdx = 0;
+    }
+
     if (this.endAfterDrain) {
+      this.maybeCloseFd();
       this.push(null);
     }
   }
@@ -334,12 +385,60 @@ class JsonParserNativeReadable extends stream.Readable {
 
   _destroy(err: Error | null, cb: (error?: Error | null) => void) {
     this.stop();
+    this.maybeCloseFd();
     cb(err);
+  }
+
+  private maybeCloseFd() {
+    if (!this.closeFdOnEnd) return;
+    if (this.fdToClose == null) return;
+    const fd = this.fdToClose;
+    this.fdToClose = null;
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // ignore
+    }
   }
 }
 
 export function createJsonParserNativeFromFd(fd: number, opts: JsonParserNativeOpts = {}) {
   return new JsonParserNativeReadable(fd, opts);
+}
+
+export function createJsonParserNativeFromStdin(opts: JsonParserNativeOpts = {}) {
+  // Prevent JS-land from also consuming stdin while native reads fd=0.
+  try {
+    (process.stdin as any).pause?.();
+  } catch {
+    // ignore
+  }
+  return createJsonParserNativeFromFd(0, opts);
+}
+
+export function createJsonParserNativeFromPath(filePath: string, opts: JsonParserNativeOpts = {}) {
+  const fd = fs.openSync(filePath, 'r');
+  // We opened the fd, so default to closing it on end unless explicitly disabled.
+  const closeFdOnEnd = ('closeFdOnEnd' in opts) ? Boolean(opts.closeFdOnEnd) : true;
+  return new JsonParserNativeReadable(fd, {...opts, closeFdOnEnd}, fd);
+}
+
+export function createJsonParserNativeFromSocket(sock: any, opts: JsonParserNativeOpts = {}) {
+  // Node's net.Socket has an internal handle with an fd on unix.
+  // IMPORTANT: Do not consume the socket in JS-land at the same time.
+  try {
+    sock.pause?.();
+  } catch {
+    // ignore
+  }
+
+  const fd = sock?._handle?.fd;
+  if (typeof fd !== 'number') {
+    const err: any = new Error('Could not get numeric fd from socket._handle.fd');
+    err.code = 'NO_FD_ON_SOCKET';
+    throw err;
+  }
+  return createJsonParserNativeFromFd(fd, opts);
 }
 
 

@@ -1,12 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-const assert = require('assert');
-const path = require('path');
-const cp = require('child_process');
-const os = require('os');
-const fs = require('fs');
-const EE = require('events');
+import assert from 'node:assert/strict';
+import * as cp from 'node:child_process';
 
 process.on('uncaughtException', err => {
   console.error('uncaughtException:', {err});
@@ -19,9 +15,9 @@ process.on('unhandledRejection', (reason, p) => {
   process.exit(1);
 });
 
-const {JSONParser} = require('@oresoftware/json-native-stream-parser');
+import {JSONParser} from '@oresoftware/json-native-stream-parser';
 
-console.log('Running test', __filename);
+console.log('Running test', import.meta.url);
 
 
 const k = cp.spawn('bash');
@@ -48,13 +44,7 @@ const to = setTimeout(() => {
 
 let count = 0;
 
-k.stdout.on('data', d => {
-  console.log('XOKOEE',String(d));
-});
-
 k.stdout.pipe(new JSONParser({delimiter:'∆'})).on('data', d => {
-
-  console.log("HERE IS ONE:", d);
   
   count++;
 
@@ -63,9 +53,6 @@ k.stdout.pipe(new JSONParser({delimiter:'∆'})).on('data', d => {
   }
 
   if(count === 3){
-
-    setTimeout(() => {
-
       clearTimeout(to);
       try {
         assert.deepStrictEqual(d, {foo: foo});
@@ -75,9 +62,6 @@ k.stdout.pipe(new JSONParser({delimiter:'∆'})).on('data', d => {
         console.error(err.message);
         process.exit(1);
       }
-
-    },1000);
-
   }
 
 

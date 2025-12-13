@@ -54,8 +54,6 @@ static napi_value make_uint32(napi_env env, uint32_t n) {
   return out;
 }
 
-// Removed unused function make_int64_as_number
-
 static napi_value make_double(napi_env env, double d) {
   napi_value out;
   napi_create_double(env, d, &out);
@@ -385,6 +383,7 @@ struct ParserOptions {
   bool track_bytes_read = false;
   bool track_bytes_written = false;
   bool clean_front = true;
+  bool lazy_handles = false;
   bool pass_raw_buffers = false;  // Pass raw JSON as Buffers instead of parsed objects
 };
 
@@ -412,10 +411,117 @@ struct ParserInstance {
 };
 
 static napi_value jvalue_to_js(napi_env env, const JValue& v);
+static napi_value get_symbol_or_fallback_key(napi_env env, napi_ref sym_ref, const char* fallback);
+
+// -----------------------------
+// Lazy handle object (native-backed, materialize on demand)
+// -----------------------------
+
+struct HandleWrap {
+  JValue value;
+  std::string raw;
+  uint32_t byte_count = 0;
+  bool wrap_metadata = false;
+  bool include_raw_string = false;
+  bool include_byte_count = false;
+  napi_ref raw_string_symbol_ref = nullptr;
+  napi_ref raw_bytes_symbol_ref = nullptr;
+};
+
+static napi_ref g_handle_ctor_ref = nullptr;
+
+static void handle_finalize(napi_env env, void* data, void* /*hint*/) {
+  auto* hw = static_cast<HandleWrap*>(data);
+  if (!hw) return;
+  if (hw->raw_string_symbol_ref) {
+    napi_delete_reference(env, hw->raw_string_symbol_ref);
+    hw->raw_string_symbol_ref = nullptr;
+  }
+  if (hw->raw_bytes_symbol_ref) {
+    napi_delete_reference(env, hw->raw_bytes_symbol_ref);
+    hw->raw_bytes_symbol_ref = nullptr;
+  }
+  delete hw;
+}
+
+static napi_value handle_to_js(napi_env env, napi_callback_info info) {
+  napi_value self;
+  size_t argc = 0;
+  napi_get_cb_info(env, info, &argc, nullptr, &self, nullptr);
+
+  HandleWrap* hw = nullptr;
+  napi_unwrap(env, self, reinterpret_cast<void**>(&hw));
+  if (!hw) {
+    napi_throw_error(env, nullptr, "NativeJsonHandle missing native state");
+    return nullptr;
+  }
+
+  ParsedItem tmp;
+  tmp.ok = true;
+  tmp.raw = hw->raw;
+  tmp.byte_count = hw->byte_count;
+
+  napi_value parsed_val = jvalue_to_js(env, hw->value);
+
+  if (hw->wrap_metadata) {
+    napi_value wrapper;
+    napi_create_object(env, &wrapper);
+    napi_set_named_property(env, wrapper, "value", parsed_val);
+
+    // attach metadata onto wrapper
+    if (hw->include_byte_count) {
+      napi_value k = get_symbol_or_fallback_key(env, hw->raw_bytes_symbol_ref, "rawJsonBytes");
+      napi_value v = make_uint32(env, tmp.byte_count);
+      napi_set_property(env, wrapper, k, v);
+    }
+    if (hw->include_raw_string) {
+      napi_value k = get_symbol_or_fallback_key(env, hw->raw_string_symbol_ref, "rawString");
+      napi_value v = make_string(env, tmp.raw);
+      napi_set_property(env, wrapper, k, v);
+    }
+
+    return wrapper;
+  }
+
+  // attach metadata directly if JS value is object-like
+  napi_valuetype t;
+  napi_typeof(env, parsed_val, &t);
+  if (t == napi_object) {
+    if (hw->include_byte_count) {
+      napi_value k = get_symbol_or_fallback_key(env, hw->raw_bytes_symbol_ref, "rawJsonBytes");
+      napi_value v = make_uint32(env, tmp.byte_count);
+      napi_set_property(env, parsed_val, k, v);
+    }
+    if (hw->include_raw_string) {
+      napi_value k = get_symbol_or_fallback_key(env, hw->raw_string_symbol_ref, "rawString");
+      napi_value v = make_string(env, tmp.raw);
+      napi_set_property(env, parsed_val, k, v);
+    }
+  }
+
+  return parsed_val;
+}
+
+static napi_value handle_ctor(napi_env env, napi_callback_info info) {
+  napi_value self;
+  size_t argc = 0;
+  napi_get_cb_info(env, info, &argc, nullptr, &self, nullptr);
+  return self;
+}
+
+static napi_value new_handle_instance(napi_env env, HandleWrap* hw) {
+  napi_value ctor;
+  napi_get_reference_value(env, g_handle_ctor_ref, &ctor);
+  napi_value inst;
+  napi_new_instance(env, ctor, 0, nullptr, &inst);
+  napi_wrap(env, inst, hw, handle_finalize, nullptr, nullptr);
+  return inst;
+}
 
 static napi_value jvalue_object_to_js(napi_env env, const JValue& v) {
   napi_value obj;
   napi_create_object(env, &obj);
+<<<<<<< HEAD
   
   // Use napi_set_property for each key-value pair to ensure properties are enumerable
   // This is the standard way to create plain JS objects with enumerable properties
@@ -424,6 +530,19 @@ static napi_value jvalue_object_to_js(napi_env env, const JValue& v) {
     napi_value key = make_string(env, kv.first);
     napi_value val = jvalue_to_js(env, kv.second);
     napi_set_property(env, obj, key, val);
+=======
+  for (const auto& kv : v.obj) {
+    napi_value val = jvalue_to_js(env, kv.second);
+    // Avoid allocating a JS string for the key in the common case.
+    // NOTE: napi_set_named_property requires a NUL-terminated UTF-8 C string.
+    // JSON keys can technically contain \u0000; fallback to set_property in that rare case.
+    if (kv.first.find('\0') == std::string::npos) {
+      napi_set_named_property(env, obj, kv.first.c_str(), val);
+    } else {
+      napi_value key = make_string(env, kv.first);
+      napi_set_property(env, obj, key, val);
+    }
+>>>>>>> d7e827c1572db401e656b5939a65dda1cf0c0b24
   }
   
   return obj;
@@ -505,6 +624,14 @@ static void attach_metadata(
 
 // We need ParserInstance inside TSFN callback for metadata/wrap behavior.
 // N-API gives us a `context` pointer. We'll use it.
+
+static void finalize_external_buffer(napi_env env, void* data, void* /*hint*/) {
+  (void)env;
+  // Data was allocated with `new[]` (via std::unique_ptr<uint8_t[]>), and ownership is transferred
+  // to the JS Buffer finalizer via `release()`.
+  delete[] static_cast<uint8_t*>(data);
+}
+
 static void call_js_from_tsfn_with_instance(napi_env env, napi_value js_cb, void* context, void* data) {
   auto* inst = static_cast<ParserInstance*>(context);
   auto* msg = static_cast<BatchMsg*>(data);
@@ -539,13 +666,20 @@ static void call_js_from_tsfn_with_instance(napi_env env, napi_value js_cb, void
         v = make_string(env, it.raw);
       } else if (inst->opts.pass_raw_buffers) {
         // Pass raw JSON as external Buffer (zero-copy, JS side will parse with V8's optimized JSON.parse)
-        // IMPORTANT: The Buffer may outlive this callback, so we must transfer ownership
-        // of the allocated memory to the Buffer finalizer.
+        // IMPORTANT: the Buffer may outlive this TSFN callback, so we must transfer ownership
+        // to the Buffer finalizer (cannot keep it owned by BatchMsg/ParsedItem).
         napi_value buffer;
         if (it.external_data) {
-          uint8_t* ptr = it.external_data.release();
-          napi_create_external_buffer(env, it.byte_count, ptr,
-                                      finalize_external_buffer, nullptr, &buffer);
+          // Use external buffer (zero-copy) - data owned by unique_ptr in ParsedItem
+          uint8_t* p = it.external_data.release();
+          napi_status st = napi_create_external_buffer(env, it.byte_count, p,
+                                                      finalize_external_buffer, nullptr, &buffer);
+          if (st != napi_ok) {
+            // If we failed to create the external buffer, free and fall back to copying.
+            void* copied_data = nullptr;
+            napi_create_buffer_copy(env, it.byte_count, p, &copied_data, &buffer);
+            delete[] p;
+          }
         } else {
           // Fallback: copy if external_data wasn't allocated (shouldn't happen in pass_raw_buffers mode)
           void* copied_data = nullptr;
@@ -555,23 +689,44 @@ static void call_js_from_tsfn_with_instance(napi_env env, napi_value js_cb, void
         }
         v = buffer;
       } else {
-        napi_value parsed_val = jvalue_to_js(env, it.value);
-        if (inst->opts.wrap_metadata) {
-          napi_value wrapper;
-          napi_create_object(env, &wrapper);
-          napi_value k;
-          napi_create_string_utf8(env, "value", NAPI_AUTO_LENGTH, &k);
-          napi_set_property(env, wrapper, k, parsed_val);
-          attach_metadata(env, inst, wrapper, it);
-          v = wrapper;
-        } else {
-          // attach metadata only if JS value is an object (arrays count as objects)
-          napi_valuetype t;
-          napi_typeof(env, parsed_val, &t);
-          if (t == napi_object) {
-            attach_metadata(env, inst, parsed_val, it);
+        if (inst->opts.lazy_handles) {
+          auto* hw = new HandleWrap();
+          hw->value = std::move(it.value);
+          hw->byte_count = it.byte_count;
+          hw->wrap_metadata = inst->opts.wrap_metadata;
+          hw->include_raw_string = inst->opts.include_raw_string;
+          hw->include_byte_count = inst->opts.include_byte_count;
+          if (hw->include_raw_string) {
+            hw->raw = std::move(it.raw);
           }
-          v = parsed_val;
+          if (inst->raw_string_symbol_ref) {
+            napi_value sym;
+            napi_get_reference_value(env, inst->raw_string_symbol_ref, &sym);
+            napi_create_reference(env, sym, 1, &hw->raw_string_symbol_ref);
+          }
+          if (inst->raw_bytes_symbol_ref) {
+            napi_value sym;
+            napi_get_reference_value(env, inst->raw_bytes_symbol_ref, &sym);
+            napi_create_reference(env, sym, 1, &hw->raw_bytes_symbol_ref);
+          }
+          v = new_handle_instance(env, hw);
+        } else {
+          napi_value parsed_val = jvalue_to_js(env, it.value);
+          if (inst->opts.wrap_metadata) {
+            napi_value wrapper;
+            napi_create_object(env, &wrapper);
+            napi_set_named_property(env, wrapper, "value", parsed_val);
+            attach_metadata(env, inst, wrapper, it);
+            v = wrapper;
+          } else {
+            // attach metadata only if JS value is an object (arrays count as objects)
+            napi_valuetype t;
+            napi_typeof(env, parsed_val, &t);
+            if (t == napi_object) {
+              attach_metadata(env, inst, parsed_val, it);
+            }
+            v = parsed_val;
+          }
         }
       }
       napi_set_element(env, arr, i, v);
@@ -709,7 +864,6 @@ static void parser_thread_main(ParserInstance* inst) {
         // JSON can be any value: object, array, number, string, boolean, null
         if (candidate.size() > 0) {
           item.ok = true;
-          item.raw = candidate;
           // Allocate external buffer for zero-copy passing to JS
           item.external_data = std::make_unique<uint8_t[]>(candidate.size());
           std::memcpy(item.external_data.get(), candidate.data(), candidate.size());
@@ -768,7 +922,6 @@ static void parser_thread_main(ParserInstance* inst) {
       // Pass all non-empty candidates - JS side will validate with JSON.parse()
       if (candidate.size() > 0) {
         item.ok = true;
-        item.raw = candidate;
         // Allocate external buffer for zero-copy passing to JS
         item.external_data = std::make_unique<uint8_t[]>(candidate.size());
         std::memcpy(item.external_data.get(), candidate.data(), candidate.size());
@@ -937,6 +1090,7 @@ static napi_value fd_json_parser_ctor(napi_env env, napi_callback_info info) {
   get_bool("emitNonJSON", inst->opts.emit_non_json);
   get_bool("trackBytesRead", inst->opts.track_bytes_read);
   get_bool("trackBytesWritten", inst->opts.track_bytes_written);
+  get_bool("lazyHandles", inst->opts.lazy_handles);
   get_bool("passRawBuffers", inst->opts.pass_raw_buffers);
 
   // Optional symbol keys passed from JS:
@@ -1058,6 +1212,25 @@ static napi_value fd_json_parser_get_stats(napi_env env, napi_callback_info info
 }
 
 static napi_value init(napi_env env, napi_value exports) {
+  // NativeJsonHandle
+  napi_property_descriptor handle_proto[] = {
+    { "toJS", 0, handle_to_js, 0, 0, 0, napi_default, 0 }
+  };
+
+  napi_value handle_ctor_val;
+  napi_define_class(
+    env,
+    "NativeJsonHandle",
+    NAPI_AUTO_LENGTH,
+    handle_ctor,
+    nullptr,
+    sizeof(handle_proto) / sizeof(handle_proto[0]),
+    handle_proto,
+    &handle_ctor_val
+  );
+  napi_create_reference(env, handle_ctor_val, 1, &g_handle_ctor_ref);
+  napi_set_named_property(env, exports, "NativeJsonHandle", handle_ctor_val);
+
   napi_property_descriptor proto_props[] = {
     { "stop", 0, fd_json_parser_stop, 0, 0, 0, napi_default, 0 },
     { "getStats", 0, fd_json_parser_get_stats, 0, 0, 0, napi_default, 0 }

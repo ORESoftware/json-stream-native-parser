@@ -1,12 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-const assert = require('assert');
-const path = require('path');
-const cp = require('child_process');
-const os = require('os');
-const fs = require('fs');
-const EE = require('events');
+import assert from 'node:assert/strict';
+import * as cp from 'node:child_process';
 
 process.on('unhandledRejection', (reason, p) => {
   // note: unless we force process to exit with 1, process may exit with 0 upon an unhandledRejection
@@ -14,9 +10,9 @@ process.on('unhandledRejection', (reason, p) => {
   process.exit(1);
 });
 
-const {JSONParser} = require('@oresoftware/json-native-stream-parser');
+import {JSONParser} from '@oresoftware/json-native-stream-parser';
 
-console.log('Running test', __filename);
+console.log('Running test', import.meta.url);
 
 const k = cp.spawn('bash');
 const foo = 'medicine';
