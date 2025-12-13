@@ -1,19 +1,14 @@
 'use strict';
 
-// NOTE : the only dependencies you should import here are core/built-in modules
-const path = require('path');
+// This repo is "type": "module", so r2g loads this file as ESM.
+// Keep it dependency-free (built-in modules only) and avoid CommonJS `require`.
 
-const searchRoot = path.resolve(process.env.MY_DOCKER_R2G_SEARCH_ROOT || process.env.HOME || '');
+import * as path from 'node:path';
 
-if (!path.isAbsolute(searchRoot)) {
-  throw new Error('Please set the env var "MY_DOCKER_R2G_SEARCH_ROOT" to an absolute folder path,' +
-    ' (note that user $HOME is usually not specific enough, and also that $HOME env var is empty).');
-}
+const searchRoot = path.resolve(process.env.MY_DOCKER_R2G_SEARCH_ROOT || process.env.HOME || process.cwd());
 
-exports.default = {
-
+export default {
   searchRoot,
   tests: '',
   packages: {}
-
 };
