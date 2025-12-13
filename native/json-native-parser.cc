@@ -358,6 +358,11 @@ struct ParsedItem {
   std::unique_ptr<uint8_t[]> external_data;  // Owned buffer for external buffer
 };
 
+static void finalize_external_buffer(napi_env /*env*/, void* data, void* /*hint*/) {
+  // Matches allocation with std::make_unique<uint8_t[]>() which uses new[]
+  delete[] reinterpret_cast<uint8_t*>(data);
+}
+
 struct BatchMsg {
   enum class Kind { Data, NonJson, End, Error } kind = Kind::Data;
   std::vector<ParsedItem> items;
@@ -544,20 +549,19 @@ static void call_js_from_tsfn_with_instance(napi_env env, napi_value js_cb, void
     napi_create_array_with_length(env, msg->items.size(), &arr);
 
     for (size_t i = 0; i < msg->items.size(); i++) {
-      const auto& it = msg->items[i];
+      auto& it = msg->items[i];
       napi_value v;
       if (msg->kind == BatchMsg::Kind::NonJson) {
         v = make_string(env, it.raw);
       } else if (inst->opts.pass_raw_buffers) {
         // Pass raw JSON as external Buffer (zero-copy, JS side will parse with V8's optimized JSON.parse)
-        // The data is owned by ParsedItem's unique_ptr, which lives until BatchMsg is deleted
-        // The BatchMsg is deleted after JS processes it, so lifetime is safe
+        // IMPORTANT: The Buffer may outlive this callback, so we must transfer ownership
+        // of the allocated memory to the Buffer finalizer.
         napi_value buffer;
         if (it.external_data) {
-          // Use external buffer (zero-copy) - data owned by unique_ptr in ParsedItem
-          // Finalizer is nullptr because unique_ptr manages lifetime and BatchMsg is deleted after JS callback
-          napi_create_external_buffer(env, it.byte_count, it.external_data.get(),
-                                      nullptr, nullptr, &buffer);
+          uint8_t* ptr = it.external_data.release();
+          napi_create_external_buffer(env, it.byte_count, ptr,
+                                      finalize_external_buffer, nullptr, &buffer);
         } else {
           // Fallback: copy if external_data wasn't allocated (shouldn't happen in pass_raw_buffers mode)
           void* copied_data = nullptr;
