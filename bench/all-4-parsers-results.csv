@@ -1,0 +1,13 @@
+Parser,Load Level,Blobs Per Second,Time (ms)
+Regular JS Parser,low,436575.61,11.55
+Web Worker Parser,low,152543.03,32.96
+Native Addon 1 (passRawBuffers: true),low,395744.79,12.65
+Native Addon 2 (passRawBuffers: false),low,138302.61,36.17
+Regular JS Parser,medium,495981.40,10.58
+Web Worker Parser,medium,145971.02,34.40
+Native Addon 1 (passRawBuffers: true),medium,411383.12,12.31
+Native Addon 2 (passRawBuffers: false),medium,132628.67,37.79
+Regular JS Parser,high,560785.44,8.92
+Web Worker Parser,high,127683.02,39.16
+Native Addon 1 (passRawBuffers: true),high,445760.81,11.28
+Native Addon 2 (passRawBuffers: false),high,139695.88,35.83
