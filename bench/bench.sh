@@ -61,6 +61,30 @@ for i in $(seq 1 "$ITERS"); do
 done
 
 echo
+echo "Native handle parser (lazy, no materialization):"
+native_handle_ms=()
+run_consumer native_handle "$ROOT/bench/native-handle-consumer.mjs" > /dev/null  # warmup
+for i in $(seq 1 "$ITERS"); do
+  out="$(run_consumer native_handle "$ROOT/bench/native-handle-consumer.mjs")"
+  ms="$(node -p "JSON.parse(process.argv[1]).ms" "$out")"
+  count="$(node -p "JSON.parse(process.argv[1]).count" "$out")"
+  echo "  iter $i/$ITERS: ${ms} ms (count=$count)"
+  native_handle_ms+=("$ms")
+done
+
+echo
+echo "Native handle parser (materialize all):"
+native_handle_mat_ms=()
+run_consumer native_handle_mat "$ROOT/bench/native-handle-materialize-consumer.mjs" > /dev/null  # warmup
+for i in $(seq 1 "$ITERS"); do
+  out="$(run_consumer native_handle_mat "$ROOT/bench/native-handle-materialize-consumer.mjs")"
+  ms="$(node -p "JSON.parse(process.argv[1]).ms" "$out")"
+  count="$(node -p "JSON.parse(process.argv[1]).count" "$out")"
+  echo "  iter $i/$ITERS: ${ms} ms (count=$count)"
+  native_handle_mat_ms+=("$ms")
+done
+
+echo
 echo "Worker parser:"
 worker_ms=()
 run_consumer worker "$ROOT/bench/worker-consumer.mjs" > /dev/null  # warmup
@@ -74,8 +98,12 @@ done
 
 ts_avg="$(printf "%s\n" "${ts_ms[@]}" | avg_ms)"
 native_avg="$(printf "%s\n" "${native_ms[@]}" | avg_ms)"
+native_handle_avg="$(printf "%s\n" "${native_handle_ms[@]}" | avg_ms)"
+native_handle_mat_avg="$(printf "%s\n" "${native_handle_mat_ms[@]}" | avg_ms)"
 worker_avg="$(printf "%s\n" "${worker_ms[@]}" | avg_ms)"
 speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$native_avg")"
+native_handle_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$native_handle_avg")"
+native_handle_mat_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$native_handle_mat_avg")"
 worker_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$worker_avg")"
 
 echo
@@ -83,6 +111,10 @@ echo "N=$N, ITERS=$ITERS"
 echo "ts avg:     $ts_avg ms"
 echo "native avg: $native_avg ms"
 echo "native speedup: ${speedup}x (higher is better)"
+echo "native handle avg: $native_handle_avg ms"
+echo "native handle speedup: ${native_handle_speedup}x (higher is better)"
+echo "native handle+materialize avg: $native_handle_mat_avg ms"
+echo "native handle+materialize speedup: ${native_handle_mat_speedup}x (higher is better)"
 echo "worker avg: $worker_avg ms"
 echo "worker speedup: ${worker_speedup}x (higher is better)"
 

@@ -29,6 +29,20 @@ export interface JsonParserNativeOpts {
    * - >= 1: push at most N items per tick, then `setImmediate()` to continue
    */
   yieldEvery?: number;
+
+  /**
+   * If true, the native addon emits lightweight handle objects (NativeJsonHandle)
+   * instead of materializing full JS values immediately.
+   *
+   * Call `.toJS()` on each handle when/if you want the POJO.
+   */
+  lazyHandles?: boolean;
+
+  /**
+   * If true, this Readable emits arrays (batches) instead of individual items.
+   * This reduces per-item stream overhead.
+   */
+  emitBatches?: boolean;
 }
 
 export interface NativeParserStats {
@@ -101,6 +115,7 @@ class JsonParserNativeReadable extends stream.Readable {
 
     const binding = loadNativeBinding();
     this.yieldEvery = Math.max(0, Number(opts.yieldEvery || 0) | 0);
+    const emitBatches = Boolean(opts.emitBatches);
 
     const nativeOpts = {
       ...opts,
@@ -115,8 +130,13 @@ class JsonParserNativeReadable extends stream.Readable {
       }
 
       if (msg.type === 'data') {
-        // Avoid spreading into a single array (alloc/copy). Keep batches as-is and drain via indices.
-        this.pendingBatches.push(msg.batch);
+        if (emitBatches) {
+          // Push a whole batch as a single stream item.
+          this.pendingBatches.push([msg.batch]);
+        } else {
+          // Avoid spreading into a single array (alloc/copy). Keep batches as-is and drain via indices.
+          this.pendingBatches.push(msg.batch);
+        }
         this.scheduleDrain();
         return;
       }
