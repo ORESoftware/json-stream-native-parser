@@ -10,12 +10,18 @@ This is a high-performance JSON streaming parser for Node.js with multiple imple
 
 ### Native Parser Defaults
 - **`passRawBuffers: true`** is the default (optimized mode)
-  - Uses zero-copy external buffers
-  - Leverages V8's optimized JSON.parse()
-  - Better performance, especially under load
+  - Native thread: I/O + splitting → passes raw buffers to JS
+  - Main thread: Uses V8's optimized JSON.parse() on buffers
+  - Better performance under CPU load (I/O offloaded)
   - **Uses separate C++ background thread** (`std::thread`) for I/O
+  - Performance: ~13ms for 10K objects
+- **`passRawBuffers: false`** (C++ parsing mode, alternative)
+  - Native thread: I/O + splitting + C++ JSON parsing + N-API object construction
+  - Main thread: Receives pre-parsed POJSOs
+  - Better when main thread is idle (direct object construction)
+  - Performance: ~12.6ms for 10K objects
 - **`batchSize: 64`** (can be increased to 2048+ for better throughput)
-- Set `passRawBuffers: false` to use C++ JSON parsing (slower, mainly for debugging)
+- Both modes are fully supported and tested. Performance difference is minimal (~2%)
 
 ### Performance Characteristics
 - **Idle main thread**: TS parser is fastest (~17ms for 5K objects)

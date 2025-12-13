@@ -417,29 +417,13 @@ static napi_value jvalue_object_to_js(napi_env env, const JValue& v) {
   napi_value obj;
   napi_create_object(env, &obj);
   
-  // Optimize: Use bulk property definition for better performance
-  if (v.obj.size() > 0) {
-    std::vector<napi_property_descriptor> props;
-    props.reserve(v.obj.size());
-    
-    for (const auto& kv : v.obj) {
-      napi_value key = make_string(env, kv.first);
-      napi_value val = jvalue_to_js(env, kv.second);
-      
-      napi_property_descriptor prop = {};
-      prop.utf8name = nullptr;
-      prop.name = key;
-      prop.method = nullptr;
-      prop.getter = nullptr;
-      prop.setter = nullptr;
-      prop.value = val;
-      prop.attributes = napi_default;
-      prop.data = nullptr;
-      props.push_back(prop);
-    }
-    
-    // Single bulk call instead of many individual calls
-    napi_define_properties(env, obj, props.size(), props.data());
+  // Use napi_set_property for each key-value pair to ensure properties are enumerable
+  // This is the standard way to create plain JS objects with enumerable properties
+  // napi_set_property creates enumerable, writable, configurable properties by default
+  for (const auto& kv : v.obj) {
+    napi_value key = make_string(env, kv.first);
+    napi_value val = jvalue_to_js(env, kv.second);
+    napi_set_property(env, obj, key, val);
   }
   
   return obj;
