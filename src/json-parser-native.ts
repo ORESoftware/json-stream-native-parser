@@ -43,6 +43,14 @@ export interface JsonParserNativeOpts {
    * This reduces per-item stream overhead.
    */
   emitBatches?: boolean;
+
+  /**
+   * If true, and this parser opened the FD itself (e.g. from a file path),
+   * it will close the FD when parsing ends or the stream is destroyed.
+   *
+   * Defaults to false (never closes user-provided FDs).
+   */
+  closeFdOnEnd?: boolean;
 }
 
 export interface NativeParserStats {
@@ -109,13 +117,17 @@ class JsonParserNativeReadable extends stream.Readable {
   private yielding = false;
   private drainScheduled = false;
   private yieldEvery = 0;
+  private fdToClose: number | null = null;
+  private closeFdOnEnd = false;
 
-  constructor(fd: number, opts: JsonParserNativeOpts = {}) {
+  constructor(fd: number, opts: JsonParserNativeOpts = {}, fdToClose: number | null = null) {
     super({objectMode: true, highWaterMark: 16});
 
     const binding = loadNativeBinding();
     this.yieldEvery = Math.max(0, Number(opts.yieldEvery || 0) | 0);
     const emitBatches = Boolean(opts.emitBatches);
+    this.closeFdOnEnd = Boolean(opts.closeFdOnEnd);
+    this.fdToClose = fdToClose;
 
     const nativeOpts = {
       ...opts,
@@ -228,6 +240,7 @@ class JsonParserNativeReadable extends stream.Readable {
     }
 
     if (this.endAfterDrain) {
+      this.maybeCloseFd();
       this.push(null);
     }
   }
@@ -249,12 +262,60 @@ class JsonParserNativeReadable extends stream.Readable {
 
   _destroy(err: Error | null, cb: (error?: Error | null) => void) {
     this.stop();
+    this.maybeCloseFd();
     cb(err);
+  }
+
+  private maybeCloseFd() {
+    if (!this.closeFdOnEnd) return;
+    if (this.fdToClose == null) return;
+    const fd = this.fdToClose;
+    this.fdToClose = null;
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // ignore
+    }
   }
 }
 
 export function createJsonParserNativeFromFd(fd: number, opts: JsonParserNativeOpts = {}) {
   return new JsonParserNativeReadable(fd, opts);
+}
+
+export function createJsonParserNativeFromStdin(opts: JsonParserNativeOpts = {}) {
+  // Prevent JS-land from also consuming stdin while native reads fd=0.
+  try {
+    (process.stdin as any).pause?.();
+  } catch {
+    // ignore
+  }
+  return createJsonParserNativeFromFd(0, opts);
+}
+
+export function createJsonParserNativeFromPath(filePath: string, opts: JsonParserNativeOpts = {}) {
+  const fd = fs.openSync(filePath, 'r');
+  // We opened the fd, so default to closing it on end unless explicitly disabled.
+  const closeFdOnEnd = ('closeFdOnEnd' in opts) ? Boolean(opts.closeFdOnEnd) : true;
+  return new JsonParserNativeReadable(fd, {...opts, closeFdOnEnd}, fd);
+}
+
+export function createJsonParserNativeFromSocket(sock: any, opts: JsonParserNativeOpts = {}) {
+  // Node's net.Socket has an internal handle with an fd on unix.
+  // IMPORTANT: Do not consume the socket in JS-land at the same time.
+  try {
+    sock.pause?.();
+  } catch {
+    // ignore
+  }
+
+  const fd = sock?._handle?.fd;
+  if (typeof fd !== 'number') {
+    const err: any = new Error('Could not get numeric fd from socket._handle.fd');
+    err.code = 'NO_FD_ON_SOCKET';
+    throw err;
+  }
+  return createJsonParserNativeFromFd(fd, opts);
 }
 
 

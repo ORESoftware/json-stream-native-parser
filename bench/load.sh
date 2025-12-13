@@ -37,6 +37,7 @@ echo
 echo "TS under load (LOAD=$LOAD):"
 ts_ms=()
 ts_lag=()
+node "$ROOT/bench/load-consumer-ts.mjs" < "$TMP" > /dev/null || true  # warmup
 for i in $(seq 1 "$ITERS"); do
   out="$(run_consumer "$ROOT/bench/load-consumer-ts.mjs")"
   ms="$(node -p "JSON.parse(process.argv[1]).ms" "$out")"
@@ -51,6 +52,7 @@ echo
 echo "Native under load (LOAD=$LOAD, yieldEvery=$YIELD_EVERY):"
 native_ms=()
 native_lag=()
+node "$ROOT/bench/load-consumer-native.mjs" < "$TMP" > /dev/null || true  # warmup
 for i in $(seq 1 "$ITERS"); do
   out="$(run_consumer "$ROOT/bench/load-consumer-native.mjs")"
   ms="$(node -p "JSON.parse(process.argv[1]).ms" "$out")"
@@ -62,9 +64,40 @@ for i in $(seq 1 "$ITERS"); do
 done
 
 echo
+echo "Native handle under load (lazy, no materialize):"
+native_h_ms=()
+native_h_lag=()
+node "$ROOT/bench/load-consumer-native-handle.mjs" < "$TMP" > /dev/null || true  # warmup
+for i in $(seq 1 "$ITERS"); do
+  out="$(run_consumer "$ROOT/bench/load-consumer-native-handle.mjs")"
+  ms="$(node -p "JSON.parse(process.argv[1]).ms" "$out")"
+  lag="$(node -p "JSON.parse(process.argv[1]).maxLagMs" "$out")"
+  count="$(node -p "JSON.parse(process.argv[1]).count" "$out")"
+  echo "  iter $i/$ITERS: ${ms} ms (count=$count, maxLagMs=$lag)"
+  native_h_ms+=("$ms")
+  native_h_lag+=("$lag")
+done
+
+echo
+echo "Native handle under load (materialize all):"
+native_hm_ms=()
+native_hm_lag=()
+node "$ROOT/bench/load-consumer-native-handle-materialize.mjs" < "$TMP" > /dev/null || true  # warmup
+for i in $(seq 1 "$ITERS"); do
+  out="$(run_consumer "$ROOT/bench/load-consumer-native-handle-materialize.mjs")"
+  ms="$(node -p "JSON.parse(process.argv[1]).ms" "$out")"
+  lag="$(node -p "JSON.parse(process.argv[1]).maxLagMs" "$out")"
+  count="$(node -p "JSON.parse(process.argv[1]).count" "$out")"
+  echo "  iter $i/$ITERS: ${ms} ms (count=$count, maxLagMs=$lag)"
+  native_hm_ms+=("$ms")
+  native_hm_lag+=("$lag")
+done
+
+echo
 echo "Worker under load (LOAD=$LOAD):"
 worker_ms=()
 worker_lag=()
+node "$ROOT/bench/load-consumer-worker.mjs" < "$TMP" > /dev/null || true  # warmup
 for i in $(seq 1 "$ITERS"); do
   out="$(run_consumer "$ROOT/bench/load-consumer-worker.mjs")"
   ms="$(node -p "JSON.parse(process.argv[1]).ms" "$out")"
@@ -77,11 +110,17 @@ done
 
 ts_avg="$(printf "%s\n" "${ts_ms[@]}" | avg_ms)"
 native_avg="$(printf "%s\n" "${native_ms[@]}" | avg_ms)"
+native_h_avg="$(printf "%s\n" "${native_h_ms[@]}" | avg_ms)"
+native_hm_avg="$(printf "%s\n" "${native_hm_ms[@]}" | avg_ms)"
 worker_avg="$(printf "%s\n" "${worker_ms[@]}" | avg_ms)"
 ts_lag_avg="$(printf "%s\n" "${ts_lag[@]}" | avg_ms)"
 native_lag_avg="$(printf "%s\n" "${native_lag[@]}" | avg_ms)"
+native_h_lag_avg="$(printf "%s\n" "${native_h_lag[@]}" | avg_ms)"
+native_hm_lag_avg="$(printf "%s\n" "${native_hm_lag[@]}" | avg_ms)"
 worker_lag_avg="$(printf "%s\n" "${worker_lag[@]}" | avg_ms)"
 speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$native_avg")"
+native_h_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$native_h_avg")"
+native_hm_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$native_hm_avg")"
 worker_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$worker_avg")"
 
 echo
@@ -91,6 +130,12 @@ echo "native avg ms:     $native_avg"
 echo "throughput speed:  ${speedup}x (higher is better)"
 echo "ts avg maxLagMs:   $ts_lag_avg"
 echo "native avg maxLagMs: $native_lag_avg"
+echo "native-handle avg ms: $native_h_avg"
+echo "native-handle throughput speed: ${native_h_speedup}x (higher is better)"
+echo "native-handle avg maxLagMs: $native_h_lag_avg"
+echo "native-handle-materialize avg ms: $native_hm_avg"
+echo "native-handle-materialize throughput speed: ${native_hm_speedup}x (higher is better)"
+echo "native-handle-materialize avg maxLagMs: $native_hm_lag_avg"
 echo "worker avg ms:     $worker_avg"
 echo "worker throughput speed: ${worker_speedup}x (higher is better)"
 echo "worker avg maxLagMs: $worker_lag_avg"

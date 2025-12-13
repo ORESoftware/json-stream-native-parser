@@ -96,15 +96,29 @@ for i in $(seq 1 "$ITERS"); do
   worker_ms+=("$ms")
 done
 
+echo
+echo "Worker parser (v8.serialize batches):"
+worker_v8_ms=()
+run_consumer worker_v8 "$ROOT/bench/worker-v8-consumer.mjs" > /dev/null  # warmup
+for i in $(seq 1 "$ITERS"); do
+  out="$(run_consumer worker_v8 "$ROOT/bench/worker-v8-consumer.mjs")"
+  ms="$(node -p "JSON.parse(process.argv[1]).ms" "$out")"
+  count="$(node -p "JSON.parse(process.argv[1]).count" "$out")"
+  echo "  iter $i/$ITERS: ${ms} ms (count=$count)"
+  worker_v8_ms+=("$ms")
+done
+
 ts_avg="$(printf "%s\n" "${ts_ms[@]}" | avg_ms)"
 native_avg="$(printf "%s\n" "${native_ms[@]}" | avg_ms)"
 native_handle_avg="$(printf "%s\n" "${native_handle_ms[@]}" | avg_ms)"
 native_handle_mat_avg="$(printf "%s\n" "${native_handle_mat_ms[@]}" | avg_ms)"
 worker_avg="$(printf "%s\n" "${worker_ms[@]}" | avg_ms)"
+worker_v8_avg="$(printf "%s\n" "${worker_v8_ms[@]}" | avg_ms)"
 speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$native_avg")"
 native_handle_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$native_handle_avg")"
 native_handle_mat_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$native_handle_mat_avg")"
 worker_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$worker_avg")"
+worker_v8_speedup="$(node -p "(Number(process.argv[1]) / Number(process.argv[2])).toFixed(2)" "$ts_avg" "$worker_v8_avg")"
 
 echo
 echo "N=$N, ITERS=$ITERS"
@@ -117,5 +131,7 @@ echo "native handle+materialize avg: $native_handle_mat_avg ms"
 echo "native handle+materialize speedup: ${native_handle_mat_speedup}x (higher is better)"
 echo "worker avg: $worker_avg ms"
 echo "worker speedup: ${worker_speedup}x (higher is better)"
+echo "worker-v8 avg: $worker_v8_avg ms"
+echo "worker-v8 speedup: ${worker_v8_speedup}x (higher is better)"
 
 

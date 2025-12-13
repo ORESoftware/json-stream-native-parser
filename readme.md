@@ -151,21 +151,37 @@ Usage:
 
 ```js
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import {
   createJsonParserNativeFromFd,
+  createJsonParserNativeFromStdin,
+  createJsonParserNativeFromPath,
+  createJsonParserNativeFromSocket,
   RawStringSymbol,
   RawJSONBytesSymbol
 } from '@oresoftware/json-native-stream-parser';
 
-const fd = fs.openSync('/path/to/file.jsonl', 'r');
+// 1) From a file path (auto-opens + auto-closes the FD)
+const s1 = createJsonParserNativeFromPath('/path/to/file.jsonl', { delimiter: '\n' });
 
-const s = createJsonParserNativeFromFd(fd, {
-  delimiter: '\n',
-  batchSize: 64,
-  includeRawString: true,
-  includeByteCount: true,
-  emitNonJSON: true
-});
+// 2) From stdin (fd=0)
+// IMPORTANT: do not also do `process.stdin.pipe(...)` at the same time.
+const s2 = createJsonParserNativeFromStdin({ delimiter: '\n' });
+
+// 3) From any existing FD you already have
+const fd = fs.openSync('/path/to/file.jsonl', 'r'); // you own this FD
+const s3 = createJsonParserNativeFromFd(fd, { delimiter: '\n', closeFdOnEnd: false });
+
+// 4) From a TCP socket (net.Socket)
+// IMPORTANT: do not attach 'data' listeners / pipe() this socket in JS at the same time.
+const sock = net.createConnection(6970, 'localhost');
+const s4 = createJsonParserNativeFromSocket(sock, { delimiter: '\n' });
+
+// 5) From a unix domain socket path (net.Socket)
+const usock = net.createConnection({ path: '/tmp/my.sock' });
+const s5 = createJsonParserNativeFromSocket(usock, { delimiter: '\n' });
+
+const s = s1; // pick one of the above
 
 s.on('data', (obj) => {
   // obj is a fully parsed POJO/array/value (nested OK)
@@ -173,11 +189,25 @@ s.on('data', (obj) => {
   // obj[RawStringSymbol], obj[RawJSONBytesSymbol]
 });
 
-s.on('string', (line) => {
+// Optional metadata + behavior flags:
+const sWithMeta = createJsonParserNativeFromPath('/path/to/file.jsonl', {
+  delimiter: '\n',
+  batchSize: 64,
+  includeRawString: true,
+  includeByteCount: true,
+  emitNonJSON: true
+});
+
+sWithMeta.on('string', (line) => {
   // only when emitNonJSON: true
 });
 
-s.on('stats', (stats) => {
+sWithMeta.on('stats', (stats) => {
   // { bytesRead, bytesWritten, linesOk, linesFailed, ended }
 });
 ```
+
+#### Important caveat (sockets / stdin)
+
+When you use `createJsonParserNativeFromStdin()` or `createJsonParserNativeFromSocket()`, **native code reads the FD directly**.
+Do **not** also consume that same stream in JS-land (no `.pipe()`, no `'data'` listeners), or you’ll race for bytes.
