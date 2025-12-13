@@ -7,6 +7,9 @@ const load = Number(process.env.LOAD || 0.5); // fraction of time to busy-wait i
 const periodMs = Number(process.env.LOAD_PERIOD_MS || 20);
 const intervalMs = Number(process.env.INTERVAL_MS || 10);
 const yieldEvery = Number(process.env.YIELD_EVERY || 1024);
+const batchSize = Number(process.env.BATCH_SIZE || 256);
+// 1 => native emits Buffers (JS JSON.parse), 0 => native emits POJOs (C++ parse + N-API)
+const passRawBuffers = (process.env.PASS_RAW_BUFFERS ?? '1') !== '0';
 
 function busyWait(ms) {
   const end = process.hrtime.bigint() + BigInt(Math.floor(ms * 1e6));
@@ -36,7 +39,8 @@ let count = 0;
 
 const s = createJsonParserNativeFromFd(0, {
   delimiter: '\n',
-  batchSize: 256,
+  batchSize,
+  passRawBuffers,
   yieldEvery
 });
 
@@ -51,7 +55,19 @@ s.on('end', () => {
   clearInterval(loadTimer);
   clearInterval(lagTimer);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  process.stdout.write(JSON.stringify({impl: 'native', count, ms, load, periodMs, intervalMs, ticks, maxLagMs, yieldEvery}) + '\n');
+  process.stdout.write(JSON.stringify({
+    impl: passRawBuffers ? 'native-buf' : 'native-cpp',
+    count,
+    ms,
+    load,
+    periodMs,
+    intervalMs,
+    ticks,
+    maxLagMs,
+    yieldEvery,
+    batchSize,
+    passRawBuffers
+  }) + '\n');
 });
 
 
