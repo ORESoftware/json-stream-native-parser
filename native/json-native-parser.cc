@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <chrono>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -618,6 +619,12 @@ static void parser_thread_main(ParserInstance* inst) {
     if (n == 0) break; // EOF
     if (n < 0) {
       if (errno == EINTR) continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        // Some pipes/sockets can be non-blocking (e.g. handles from child_process).
+        // Avoid busy-spinning.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        continue;
+      }
       if (inst->stop.load()) break;
       auto* msg = new BatchMsg();
       msg->kind = BatchMsg::Kind::Error;

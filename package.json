@@ -22,6 +22,9 @@
     "build:esm": "tsc -p tsconfig.json",
     "build:cjs": "tsc -p tsconfig.cjs.json && node scripts/prep-cjs.mjs",
     "build:native": "node-gyp rebuild",
+    "bench": "npm run build && node bench/run.mjs",
+    "bench:inproc": "npm run build && node bench/run-inproc.mjs",
+    "bench:sh": "npm run build && bash bench/bench.sh",
     "test": "npm run build && node test/run.js"
   },
   "repository": {
