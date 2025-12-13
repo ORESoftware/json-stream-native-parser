@@ -17,6 +17,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <memory>
 
 #if defined(_WIN32)
 #  include <io.h>
@@ -351,6 +352,8 @@ struct ParsedItem {
   JValue value;
   std::string raw;
   uint32_t byte_count = 0;
+  // For external buffer mode: keep raw data alive until JS processes it
+  std::unique_ptr<uint8_t[]> external_data;  // Owned buffer for external buffer
 };
 
 struct BatchMsg {
@@ -376,6 +379,7 @@ struct ParserOptions {
   bool track_bytes_written = false;
   bool clean_front = true;
   bool lazy_handles = false;
+  bool pass_raw_buffers = false;  // Pass raw JSON as Buffers instead of parsed objects
 };
 
 struct ParserInstance {
@@ -524,16 +528,29 @@ static napi_value jvalue_object_to_js(napi_env env, const JValue& v) {
       napi_set_property(env, obj, key, val);
     }
   }
+  
   return obj;
 }
 
 static napi_value jvalue_array_to_js(napi_env env, const JValue& v) {
   napi_value arr;
   napi_create_array_with_length(env, v.arr.size(), &arr);
-  for (size_t i = 0; i < v.arr.size(); i++) {
-    napi_value val = jvalue_to_js(env, v.arr[i]);
-    napi_set_element(env, arr, i, val);
+  
+  // Optimize: Pre-create all values, then set in batch
+  if (v.arr.size() > 0) {
+    std::vector<napi_value> values;
+    values.reserve(v.arr.size());
+    
+    for (size_t i = 0; i < v.arr.size(); i++) {
+      values.push_back(jvalue_to_js(env, v.arr[i]));
+    }
+    
+    // Set all elements (V8 can optimize this better than individual calls)
+    for (size_t i = 0; i < values.size(); i++) {
+      napi_set_element(env, arr, i, values[i]);
+    }
   }
+  
   return arr;
 }
 
@@ -591,6 +608,14 @@ static void attach_metadata(
 
 // We need ParserInstance inside TSFN callback for metadata/wrap behavior.
 // N-API gives us a `context` pointer. We'll use it.
+
+static void finalize_external_buffer(napi_env env, void* data, void* /*hint*/) {
+  (void)env;
+  // Data was allocated with `new[]` (via std::unique_ptr<uint8_t[]>), and ownership is transferred
+  // to the JS Buffer finalizer via `release()`.
+  delete[] static_cast<uint8_t*>(data);
+}
+
 static void call_js_from_tsfn_with_instance(napi_env env, napi_value js_cb, void* context, void* data) {
   auto* inst = static_cast<ParserInstance*>(context);
   auto* msg = static_cast<BatchMsg*>(data);
@@ -623,6 +648,30 @@ static void call_js_from_tsfn_with_instance(napi_env env, napi_value js_cb, void
       napi_value v;
       if (msg->kind == BatchMsg::Kind::NonJson) {
         v = make_string(env, it.raw);
+      } else if (inst->opts.pass_raw_buffers) {
+        // Pass raw JSON as external Buffer (zero-copy, JS side will parse with V8's optimized JSON.parse)
+        // IMPORTANT: the Buffer may outlive this TSFN callback, so we must transfer ownership
+        // to the Buffer finalizer (cannot keep it owned by BatchMsg/ParsedItem).
+        napi_value buffer;
+        if (it.external_data) {
+          // Use external buffer (zero-copy) - data owned by unique_ptr in ParsedItem
+          uint8_t* p = it.external_data.release();
+          napi_status st = napi_create_external_buffer(env, it.byte_count, p,
+                                                      finalize_external_buffer, nullptr, &buffer);
+          if (st != napi_ok) {
+            // If we failed to create the external buffer, free and fall back to copying.
+            void* copied_data = nullptr;
+            napi_create_buffer_copy(env, it.byte_count, p, &copied_data, &buffer);
+            delete[] p;
+          }
+        } else {
+          // Fallback: copy if external_data wasn't allocated (shouldn't happen in pass_raw_buffers mode)
+          void* copied_data = nullptr;
+          napi_create_buffer_copy(env, it.raw.size(), 
+                                  reinterpret_cast<const uint8_t*>(it.raw.data()), 
+                                  &copied_data, &buffer);
+        }
+        v = buffer;
       } else {
         if (inst->opts.lazy_handles) {
           auto* hw = new HandleWrap();
@@ -711,13 +760,13 @@ static void parser_thread_main(ParserInstance* inst) {
     return;
   }
 
-  const size_t BUF_SZ = 64 * 1024;
+  const size_t BUF_SZ = 256 * 1024;  // Even larger buffer for better I/O
   std::vector<char> buf(BUF_SZ);
   std::string pending;
-  pending.reserve(BUF_SZ * 2);
+  pending.reserve(BUF_SZ * 8);  // Much more reserve to minimize reallocations
 
   std::vector<ParsedItem> batch;
-  batch.reserve(inst->opts.batch_size);
+  batch.reserve(inst->opts.batch_size * 2);  // Over-reserve to reduce reallocations
 
   auto flush_batch = [&]() {
     if (batch.empty()) return;
@@ -725,7 +774,8 @@ static void parser_thread_main(ParserInstance* inst) {
     msg->kind = BatchMsg::Kind::Data;
     msg->items = std::move(batch);
     batch.clear();
-    batch.reserve(inst->opts.batch_size);
+    batch.reserve(inst->opts.batch_size * 2);  // Over-reserve
+    // Use blocking call to ensure messages are processed in order
     napi_call_threadsafe_function(inst->tsfn, msg, napi_tsfn_blocking);
   };
 
@@ -792,26 +842,48 @@ static void parser_thread_main(ParserInstance* inst) {
       ParsedItem item;
       item.byte_count = static_cast<uint32_t>(candidate.size());
 
-      JValue parsed;
-      if (parse_json(candidate, parsed)) {
-        item.ok = true;
-        item.value = std::move(parsed);
-        if (inst->opts.include_raw_string) {
-          item.raw = candidate;
+      if (inst->opts.pass_raw_buffers) {
+        // Skip JSON parsing - just store raw string, JS side will parse with V8's optimized JSON.parse()
+        // Pass all non-empty candidates - JS side will validate with JSON.parse()
+        // JSON can be any value: object, array, number, string, boolean, null
+        if (candidate.size() > 0) {
+          item.ok = true;
+          // Allocate external buffer for zero-copy passing to JS
+          item.external_data = std::make_unique<uint8_t[]>(candidate.size());
+          std::memcpy(item.external_data.get(), candidate.data(), candidate.size());
+          batch.emplace_back(std::move(item));
+          inst->lines_ok.fetch_add(1);
+          if (inst->opts.track_bytes_written) {
+            inst->bytes_written.fetch_add(static_cast<uint64_t>(item.byte_count));
+          }
+          if (batch.size() >= inst->opts.batch_size) flush_batch();
+        } else {
+          // Empty line - skip
         }
-        batch.emplace_back(std::move(item));
-        inst->lines_ok.fetch_add(1);
-        if (inst->opts.track_bytes_written) {
-          inst->bytes_written.fetch_add(static_cast<uint64_t>(item.byte_count));
-        }
-        if (batch.size() >= inst->opts.batch_size) flush_batch();
+        // Note: JSON validation happens on JS side via JSON.parse()
+        // Invalid JSON will be caught there and can emit 'string' event if emitNonJSON is enabled
       } else {
-        inst->lines_failed.fetch_add(1);
-        if (inst->opts.emit_non_json) {
-          item.ok = false;
-          item.raw = candidate;
-          nonjson_batch.emplace_back(std::move(item));
-          if (nonjson_batch.size() >= inst->opts.batch_size) flush_nonjson(nonjson_batch);
+        JValue parsed;
+        if (parse_json(candidate, parsed)) {
+          item.ok = true;
+          item.value = std::move(parsed);
+          if (inst->opts.include_raw_string) {
+            item.raw = candidate;
+          }
+          batch.emplace_back(std::move(item));
+          inst->lines_ok.fetch_add(1);
+          if (inst->opts.track_bytes_written) {
+            inst->bytes_written.fetch_add(static_cast<uint64_t>(item.byte_count));
+          }
+          if (batch.size() >= inst->opts.batch_size) flush_batch();
+        } else {
+          inst->lines_failed.fetch_add(1);
+          if (inst->opts.emit_non_json) {
+            item.ok = false;
+            item.raw = candidate;
+            nonjson_batch.emplace_back(std::move(item));
+            if (nonjson_batch.size() >= inst->opts.batch_size) flush_nonjson(nonjson_batch);
+          }
         }
       }
     }
@@ -828,24 +900,48 @@ static void parser_thread_main(ParserInstance* inst) {
 
     ParsedItem item;
     item.byte_count = static_cast<uint32_t>(candidate.size());
-    JValue parsed;
-    if (parse_json(candidate, parsed)) {
-      item.ok = true;
-      item.value = std::move(parsed);
-      if (inst->opts.include_raw_string) {
-        item.raw = candidate;
-      }
-      batch.emplace_back(std::move(item));
-      inst->lines_ok.fetch_add(1);
-      if (inst->opts.track_bytes_written) {
-        inst->bytes_written.fetch_add(static_cast<uint64_t>(item.byte_count));
+    
+    if (inst->opts.pass_raw_buffers) {
+      // Skip JSON parsing - just store raw string, JS side will parse with V8's optimized JSON.parse()
+      // Pass all non-empty candidates - JS side will validate with JSON.parse()
+      if (candidate.size() > 0) {
+        item.ok = true;
+        // Allocate external buffer for zero-copy passing to JS
+        item.external_data = std::make_unique<uint8_t[]>(candidate.size());
+        std::memcpy(item.external_data.get(), candidate.data(), candidate.size());
+        batch.emplace_back(std::move(item));
+        inst->lines_ok.fetch_add(1);
+        if (inst->opts.track_bytes_written) {
+          inst->bytes_written.fetch_add(static_cast<uint64_t>(item.byte_count));
+        }
+      } else {
+        inst->lines_failed.fetch_add(1);
+        if (inst->opts.emit_non_json) {
+          item.ok = false;
+          item.raw = candidate;
+          nonjson_batch.emplace_back(std::move(item));
+        }
       }
     } else {
-      inst->lines_failed.fetch_add(1);
-      if (inst->opts.emit_non_json) {
-        item.ok = false;
-        item.raw = candidate;
-        nonjson_batch.emplace_back(std::move(item));
+      JValue parsed;
+      if (parse_json(candidate, parsed)) {
+        item.ok = true;
+        item.value = std::move(parsed);
+        if (inst->opts.include_raw_string) {
+          item.raw = candidate;
+        }
+        batch.emplace_back(std::move(item));
+        inst->lines_ok.fetch_add(1);
+        if (inst->opts.track_bytes_written) {
+          inst->bytes_written.fetch_add(static_cast<uint64_t>(item.byte_count));
+        }
+      } else {
+        inst->lines_failed.fetch_add(1);
+        if (inst->opts.emit_non_json) {
+          item.ok = false;
+          item.raw = candidate;
+          nonjson_batch.emplace_back(std::move(item));
+        }
       }
     }
   }
@@ -979,6 +1075,7 @@ static napi_value fd_json_parser_ctor(napi_env env, napi_callback_info info) {
   get_bool("trackBytesRead", inst->opts.track_bytes_read);
   get_bool("trackBytesWritten", inst->opts.track_bytes_written);
   get_bool("lazyHandles", inst->opts.lazy_handles);
+  get_bool("passRawBuffers", inst->opts.pass_raw_buffers);
 
   // Optional symbol keys passed from JS:
   // opts.rawStringSymbol, opts.rawJsonBytesSymbol

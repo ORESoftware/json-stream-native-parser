@@ -12,6 +12,8 @@ export {
   createJsonParserNativeFromSocket
 } from './json-parser-native.js';
 export type {JsonParserNativeOpts, NativeParserStats} from './json-parser-native.js';
+export {createJsonParserWorkerFromFd} from './json-parser-worker.js';
+export type {JsonParserWorkerOpts, WorkerParserStats} from './json-parser-worker.js';
 
 export const r2gSmokeTest = function () {
   // r2g command line app uses this exported function

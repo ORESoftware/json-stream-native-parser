@@ -4,6 +4,7 @@ import * as stream from 'node:stream';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import {createRequire} from 'node:module';
+import {Buffer} from 'node:buffer';
 
 import {RawJSONBytesSymbol, RawStringSymbol} from './symbols.js';
 
@@ -51,6 +52,16 @@ export interface JsonParserNativeOpts {
    * Defaults to false (never closes user-provided FDs).
    */
   closeFdOnEnd?: boolean;
+
+  /**
+   * If true, native code emits raw JSON bytes as Buffers, and JS parses with `JSON.parse()`.
+   *
+   * This tends to be faster than building POJOs via N-API, because V8's JSON.parse is highly optimized.
+   *
+   * - **Default: true** (optimized mode)
+   * - Set to false to use the C++ JSON parser + N-API object materialization.
+   */
+  passRawBuffers?: boolean;
 }
 
 export interface NativeParserStats {
@@ -70,20 +81,58 @@ type NativeMsg =
 function loadNativeBinding(): any {
   // IMPORTANT:
   // This file is compiled twice (ESM + CJS). Avoid `import.meta` so the CJS build doesn't fail.
-  // We locate the package root by resolving *this package's* package.json from the host app's cwd.
+  // We locate the package root by resolving *this package's* main module, then going up to find package.json.
   const require = createRequire(path.join(process.cwd(), '__json_native_parser__.js'));
 
   let pkgRoot = '';
   try {
-    const pkgJson = require.resolve('@oresoftware/json-native-stream-parser/package.json');
-    pkgRoot = path.dirname(pkgJson);
+    // Try to resolve the package's main module, then find package.json from there
+    const mainModule = require.resolve('@oresoftware/json-native-stream-parser');
+    // Main module is at dist/main.js or dist/cjs/main.js, package.json is at root
+    // Go up from dist/main.js or dist/cjs/main.js to find package root
+    let current = path.dirname(mainModule);
+    const maxDepth = 10; // Safety limit
+    let depth = 0;
+    while (current !== path.dirname(current) && depth < maxDepth) {
+      const pkgJsonPath = path.join(current, 'package.json');
+      if (fs.existsSync(pkgJsonPath)) {
+        // Verify it's the right package.json by checking the name field
+        try {
+          const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+          if (pkgJson.name === '@oresoftware/json-native-stream-parser') {
+            pkgRoot = current;
+            break;
+          }
+        } catch {
+          // Not valid JSON, keep looking
+        }
+      }
+      current = path.dirname(current);
+      depth++;
+    }
   } catch {
     // fallback: when running inside this repo directly without being installed
     const maybeRoot = process.cwd();
     const p = path.join(maybeRoot, 'package.json');
     if (fs.existsSync(p)) {
-      pkgRoot = maybeRoot;
+      try {
+        const pkgJson = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (pkgJson.name === '@oresoftware/json-native-stream-parser') {
+          pkgRoot = maybeRoot;
+        }
+      } catch {
+        // ignore
+      }
     }
+  }
+
+  if (!pkgRoot) {
+    const err = new Error(
+      `Could not locate package root for @oresoftware/json-native-stream-parser. ` +
+      `Native addon may not be built. Run \`npm run build:native\` from the package root.`
+    );
+    (err as any).code = 'NATIVE_ADDON_NOT_BUILT';
+    throw err;
   }
 
   const candidates = [
@@ -93,7 +142,9 @@ function loadNativeBinding(): any {
 
   for (const p of candidates) {
     try {
-      return require(p);
+      if (fs.existsSync(p)) {
+        return require(p);
+      }
     } catch {
       // keep trying
     }
@@ -101,7 +152,8 @@ function loadNativeBinding(): any {
 
   const err = new Error(
     `Could not load native addon (json_native_parser.node). ` +
-    `Build it with \`node-gyp rebuild\` (from package root) and try again.`
+    `Expected at: ${candidates.join(' or ')}. ` +
+    `Build it with \`npm run build:native\` (from package root) or ensure postinstall script ran.`
   );
   (err as any).code = 'NATIVE_ADDON_NOT_BUILT';
   throw err;
@@ -119,6 +171,11 @@ class JsonParserNativeReadable extends stream.Readable {
   private yieldEvery = 0;
   private fdToClose: number | null = null;
   private closeFdOnEnd = false;
+  private passRawBuffers = true;
+  private wrapMetadata = false;
+  private includeRawString = false;
+  private includeByteCount = false;
+  private emitNonJSON = false;
 
   constructor(fd: number, opts: JsonParserNativeOpts = {}, fdToClose: number | null = null) {
     super({objectMode: true, highWaterMark: 16});
@@ -140,8 +197,16 @@ class JsonParserNativeReadable extends stream.Readable {
     this.closeFdOnEnd = Boolean(normalized.closeFdOnEnd);
     this.fdToClose = fdToClose;
 
+    // Default to optimized mode (passRawBuffers: true) for best performance
+    this.passRawBuffers = normalized.passRawBuffers !== undefined ? Boolean(normalized.passRawBuffers) : true;
+    this.wrapMetadata = normalized.wrapMetadata === true;
+    this.includeRawString = normalized.includeRawString === true;
+    this.includeByteCount = normalized.includeByteCount === true;
+    this.emitNonJSON = normalized.emitNonJSON === true; // Only true if explicitly enabled
+
     const nativeOpts = {
       ...normalized,
+      passRawBuffers: this.passRawBuffers,
       // pass symbols so native can attach metadata with the *same* keys as the TS parser
       rawStringSymbol: RawStringSymbol,
       rawJsonBytesSymbol: RawJSONBytesSymbol
@@ -153,12 +218,58 @@ class JsonParserNativeReadable extends stream.Readable {
       }
 
       if (msg.type === 'data') {
-        if (emitBatches) {
-          // Push a whole batch as a single stream item.
-          this.pendingBatches.push([msg.batch]);
+        if (this.passRawBuffers) {
+          const out: any[] = [];
+          for (let i = 0; i < msg.batch.length; i++) {
+            const buf = msg.batch[i] as Buffer;
+            try {
+              const str = buf.toString('utf8');
+              let parsed = JSON.parse(str);
+
+              // Match TS parser behavior:
+              // - if wrapMetadata: wrap even primitives
+              // - else: only annotate objects/arrays
+              if (this.wrapMetadata) {
+                const wrapped: any = { value: parsed };
+                if (this.includeRawString) {
+                  wrapped[RawStringSymbol] = str;
+                }
+                if (this.includeByteCount) {
+                  wrapped[RawJSONBytesSymbol] = buf.length;
+                }
+                parsed = wrapped;
+              } else {
+                if (parsed && typeof parsed === 'object') {
+                  if (this.includeRawString) {
+                    (parsed as any)[RawStringSymbol] = str;
+                  }
+                  if (this.includeByteCount) {
+                    (parsed as any)[RawJSONBytesSymbol] = buf.length;
+                  }
+                }
+              }
+
+              out.push(parsed);
+            } catch {
+              if (this.emitNonJSON) {
+                this.emit('string', buf.toString('utf8'));
+              }
+            }
+          }
+
+          if (emitBatches) {
+            this.pendingBatches.push([out]);
+          } else {
+            this.pendingBatches.push(out);
+          }
         } else {
-          // Avoid spreading into a single array (alloc/copy). Keep batches as-is and drain via indices.
-          this.pendingBatches.push(msg.batch);
+          if (emitBatches) {
+            // Push a whole batch as a single stream item.
+            this.pendingBatches.push([msg.batch]);
+          } else {
+            // Avoid spreading into a single array (alloc/copy). Keep batches as-is and drain via indices.
+            this.pendingBatches.push(msg.batch);
+          }
         }
         this.scheduleDrain();
         return;
@@ -234,7 +345,8 @@ class JsonParserNativeReadable extends stream.Readable {
       pushed++;
     }
 
-    if (this.batchIdx < this.pendingBatches.length && this.yieldEvery > 0) {
+    // If we hit the per-tick limit and still have items left, yield.
+    if (this.batchIdx < this.pendingBatches.length && this.yieldEvery > 0 && pushed >= limit) {
       this.yielding = true;
       setImmediate(() => {
         this.yielding = false;

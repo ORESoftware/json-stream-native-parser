@@ -45,7 +45,7 @@ const to = setTimeout(() => {
 let count = 0;
 
 k.stdout.pipe(new JSONParser({delimiter:'∆'})).on('data', d => {
-
+  
   count++;
 
   if(count > 3){
@@ -53,15 +53,15 @@ k.stdout.pipe(new JSONParser({delimiter:'∆'})).on('data', d => {
   }
 
   if(count === 3){
-    clearTimeout(to);
-    try {
-      assert.deepStrictEqual(d, {foo: foo});
-      process.exit(0);
-    }
-    catch (err) {
-      console.error(err.message);
-      process.exit(1);
-    }
+      clearTimeout(to);
+      try {
+        assert.deepStrictEqual(d, {foo: foo});
+        process.exit(0);
+      }
+      catch (err) {
+        console.error(err.message);
+        process.exit(1);
+      }
   }
 
 
