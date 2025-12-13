@@ -654,13 +654,15 @@ static void parser_thread_main(ParserInstance* inst) {
       }
 
       ParsedItem item;
-      item.raw = candidate;
       item.byte_count = static_cast<uint32_t>(candidate.size());
 
       JValue parsed;
       if (parse_json(candidate, parsed)) {
         item.ok = true;
         item.value = std::move(parsed);
+        if (inst->opts.include_raw_string) {
+          item.raw = candidate;
+        }
         batch.emplace_back(std::move(item));
         inst->lines_ok.fetch_add(1);
         if (inst->opts.track_bytes_written) {
@@ -671,6 +673,7 @@ static void parser_thread_main(ParserInstance* inst) {
         inst->lines_failed.fetch_add(1);
         if (inst->opts.emit_non_json) {
           item.ok = false;
+          item.raw = candidate;
           nonjson_batch.emplace_back(std::move(item));
           if (nonjson_batch.size() >= inst->opts.batch_size) flush_nonjson(nonjson_batch);
         }
@@ -688,12 +691,14 @@ static void parser_thread_main(ParserInstance* inst) {
     }
 
     ParsedItem item;
-    item.raw = candidate;
     item.byte_count = static_cast<uint32_t>(candidate.size());
     JValue parsed;
     if (parse_json(candidate, parsed)) {
       item.ok = true;
       item.value = std::move(parsed);
+      if (inst->opts.include_raw_string) {
+        item.raw = candidate;
+      }
       batch.emplace_back(std::move(item));
       inst->lines_ok.fetch_add(1);
       if (inst->opts.track_bytes_written) {
@@ -703,6 +708,7 @@ static void parser_thread_main(ParserInstance* inst) {
       inst->lines_failed.fetch_add(1);
       if (inst->opts.emit_non_json) {
         item.ok = false;
+        item.raw = candidate;
         nonjson_batch.emplace_back(std::move(item));
       }
     }

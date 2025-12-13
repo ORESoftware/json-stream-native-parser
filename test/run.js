@@ -222,4 +222,59 @@ await test('native fd parser supports wrapMetadata (skips if native addon not bu
   }
 });
 
+await test('native fd parser does not attach RawStringSymbol/RawJSONBytesSymbol by default (skips if native addon not built)', async () => {
+  const tmp = path.join(os.tmpdir(), `json-native-parser-${process.pid}-${Date.now()}.jsonl`);
+  fs.writeFileSync(tmp, '{"a":1}\n', 'utf8');
+
+  const fd = fs.openSync(tmp, 'r');
+  try {
+    let s;
+    try {
+      s = createJsonParserNativeFromFd(fd, { delimiter: '\n' });
+    } catch (err) {
+      if (err && err.code === 'NATIVE_ADDON_NOT_BUILT') {
+        return; // skip
+      }
+      throw err;
+    }
+
+    const out = await collectStream(s);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].a, 1);
+    assert.equal(out[0][RawStringSymbol], undefined);
+    assert.equal(out[0][RawJSONBytesSymbol], undefined);
+  } finally {
+    fs.closeSync(fd);
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+});
+
+await test('native fd parser does not emit "string" events unless emitNonJSON is enabled (skips if native addon not built)', async () => {
+  const tmp = path.join(os.tmpdir(), `json-native-parser-${process.pid}-${Date.now()}.jsonl`);
+  fs.writeFileSync(tmp, 'not-json\n{"ok":true}\n', 'utf8');
+
+  const fd = fs.openSync(tmp, 'r');
+  try {
+    let s;
+    try {
+      s = createJsonParserNativeFromFd(fd, { delimiter: '\n' });
+    } catch (err) {
+      if (err && err.code === 'NATIVE_ADDON_NOT_BUILT') {
+        return; // skip
+      }
+      throw err;
+    }
+
+    const strings = [];
+    s.on('string', v => strings.push(v));
+
+    const out = await collectStream(s);
+    assert.deepEqual(out, [{ ok: true }]);
+    assert.deepEqual(strings, []);
+  } finally {
+    fs.closeSync(fd);
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+});
+
 
