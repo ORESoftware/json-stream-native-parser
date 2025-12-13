@@ -59,20 +59,58 @@ type NativeMsg =
 function loadNativeBinding(): any {
   // IMPORTANT:
   // This file is compiled twice (ESM + CJS). Avoid `import.meta` so the CJS build doesn't fail.
-  // We locate the package root by resolving *this package's* package.json from the host app's cwd.
+  // We locate the package root by resolving *this package's* main module, then going up to find package.json.
   const require = createRequire(path.join(process.cwd(), '__json_native_parser__.js'));
 
   let pkgRoot = '';
   try {
-    const pkgJson = require.resolve('@oresoftware/json-native-stream-parser/package.json');
-    pkgRoot = path.dirname(pkgJson);
+    // Try to resolve the package's main module, then find package.json from there
+    const mainModule = require.resolve('@oresoftware/json-native-stream-parser');
+    // Main module is at dist/main.js or dist/cjs/main.js, package.json is at root
+    // Go up from dist/main.js or dist/cjs/main.js to find package root
+    let current = path.dirname(mainModule);
+    const maxDepth = 10; // Safety limit
+    let depth = 0;
+    while (current !== path.dirname(current) && depth < maxDepth) {
+      const pkgJsonPath = path.join(current, 'package.json');
+      if (fs.existsSync(pkgJsonPath)) {
+        // Verify it's the right package.json by checking the name field
+        try {
+          const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+          if (pkgJson.name === '@oresoftware/json-native-stream-parser') {
+            pkgRoot = current;
+            break;
+          }
+        } catch {
+          // Not valid JSON, keep looking
+        }
+      }
+      current = path.dirname(current);
+      depth++;
+    }
   } catch {
     // fallback: when running inside this repo directly without being installed
     const maybeRoot = process.cwd();
     const p = path.join(maybeRoot, 'package.json');
     if (fs.existsSync(p)) {
-      pkgRoot = maybeRoot;
+      try {
+        const pkgJson = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (pkgJson.name === '@oresoftware/json-native-stream-parser') {
+          pkgRoot = maybeRoot;
+        }
+      } catch {
+        // ignore
+      }
     }
+  }
+
+  if (!pkgRoot) {
+    const err = new Error(
+      `Could not locate package root for @oresoftware/json-native-stream-parser. ` +
+      `Native addon may not be built. Run \`npm run build:native\` from the package root.`
+    );
+    (err as any).code = 'NATIVE_ADDON_NOT_BUILT';
+    throw err;
   }
 
   const candidates = [
@@ -82,7 +120,9 @@ function loadNativeBinding(): any {
 
   for (const p of candidates) {
     try {
-      return require(p);
+      if (fs.existsSync(p)) {
+        return require(p);
+      }
     } catch {
       // keep trying
     }
@@ -90,7 +130,8 @@ function loadNativeBinding(): any {
 
   const err = new Error(
     `Could not load native addon (json_native_parser.node). ` +
-    `Build it with \`node-gyp rebuild\` (from package root) and try again.`
+    `Expected at: ${candidates.join(' or ')}. ` +
+    `Build it with \`npm run build:native\` (from package root) or ensure postinstall script ran.`
   );
   (err as any).code = 'NATIVE_ADDON_NOT_BUILT';
   throw err;

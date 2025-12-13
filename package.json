@@ -10,7 +10,8 @@
       "import": "./dist/main.js",
       "require": "./dist/cjs/main.js",
       "default": "./dist/main.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
     "json_parser": "cli/json-parser.js"
@@ -21,7 +22,10 @@
     "build": "npm run build:esm && npm run build:cjs",
     "build:esm": "tsc -p tsconfig.json",
     "build:cjs": "tsc -p tsconfig.cjs.json && node scripts/prep-cjs.mjs",
-    "build:native": "node-gyp rebuild",
+    "build:native": "node scripts/build-native.mjs",
+    "build:native:cmake": "npx cmake-js compile",
+    "build:native:gyp": "node-gyp rebuild",
+    "postinstall": "node scripts/build-native.mjs || echo '⚠️  Native addon build failed - package will work but native parser unavailable. Install build tools (cmake-js, node-gyp-build, or node-gyp) to enable native parser.'",
     "bench": "npm run build && node bench/run.mjs",
     "bench:inproc": "npm run build && node bench/run-inproc.mjs",
     "bench:sh": "npm run build && bash bench/bench.sh",

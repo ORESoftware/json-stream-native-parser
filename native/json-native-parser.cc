@@ -54,11 +54,7 @@ static napi_value make_uint32(napi_env env, uint32_t n) {
   return out;
 }
 
-static napi_value make_int64_as_number(napi_env env, int64_t n) {
-  napi_value out;
-  napi_create_double(env, static_cast<double>(n), &out);
-  return out;
-}
+// Removed unused function make_int64_as_number
 
 static napi_value make_double(napi_env env, double d) {
   napi_value out;

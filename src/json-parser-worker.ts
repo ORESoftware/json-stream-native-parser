@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import {Worker} from 'node:worker_threads';
 import {fileURLToPath} from 'node:url';
+import {createRequire} from 'node:module';
 
 export interface JsonParserWorkerOpts {
   delimiter?: string;
@@ -44,11 +45,26 @@ class JsonParserWorkerReadable extends stream.Readable {
     this.yieldEvery = Math.max(0, Number(opts.yieldEvery || 0) | 0);
 
     // Get worker script path - resolve relative to this file
-    // Package is "type": "module" so we use ESM import.meta.url
-    // Note: This only works in ESM context (which is what this package uses)
-    // @ts-ignore - import.meta.url is available at runtime in Node.js ESM
-    const currentFileUrl = import.meta.url;
-    const workerScript = fileURLToPath(new URL('./json-parser-worker-thread.js', currentFileUrl));
+    // Handle both ESM and CJS contexts
+    // Note: prep-cjs.mjs will replace import.meta.url with __filename in CJS build
+    let workerScript: string;
+    
+    // Check if we're in CJS context (__filename is only available in CJS)
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore - __filename is available in CJS but not in ESM
+    if (typeof __filename !== 'undefined') {
+      // CJS context - use __filename (prep-cjs.mjs ensures this path is taken)
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore - __filename is available in CJS
+      workerScript = path.join(path.dirname(__filename), 'json-parser-worker-thread.js');
+    } else {
+      // ESM context - use import.meta.url
+      // This will be replaced by prep-cjs.mjs in CJS build
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore - import.meta.url is available in ESM
+      const currentFileUrl = import.meta.url;
+      workerScript = fileURLToPath(new URL('./json-parser-worker-thread.js', currentFileUrl));
+    }
 
     // Create worker
     this.worker = new Worker(workerScript, {

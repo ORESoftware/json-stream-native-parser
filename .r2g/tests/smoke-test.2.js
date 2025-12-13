@@ -14,7 +14,7 @@ process.on('unhandledRejection', (reason, p) => {
   process.exit(1);
 });
 
-const {JSONParser} = require('@oresoftware/json-stream-parser');
+const {JSONParser} = require('@oresoftware/json-native-stream-parser');
 
 console.log('Running test', __filename);
 

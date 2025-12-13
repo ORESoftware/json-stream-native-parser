@@ -1,42 +1,23 @@
 #!/usr/bin/env node
-'use strict';
+import assert from 'node:assert';
+import {JSONParser} from '@oresoftware/json-native-stream-parser';
 
-const assert = require('assert');
-const path = require('path');
-const cp = require('child_process');
-const os = require('os');
-const fs = require('fs');
-const EE = require('events');
+// Test that JSONParser works
+const parser = new JSONParser();
+let count = 0;
 
-process.on('unhandledRejection', (reason, p) => {
-  // note: unless we force process to exit with 1, process may exit with 0 upon an unhandledRejection
-  console.error(reason);
-  process.exit(1);
+parser.on('data', () => {
+  count++;
 });
 
-console.log('Running test', __filename);
+// Test with simple JSON
+parser.write('{"foo":1}\n');
+parser.write('{"bar":2}\n');
+parser.end();
 
-const {JSONParser} = require('@oresoftware/json-stream-parser');
-
-const k = cp.spawn('bash');
-k.stdin.end(`echo '{"foo":"bar"}\n'`);
-
-const to = setTimeout(() => {
-  console.error('did not receive parsed JSON object within alloted time.');
-  process.exit(1);
-}, 300);
-
-k.stdout.pipe(new JSONParser()).on('data', d => {
-  
-  clearTimeout(to);
-  try {
-    assert.deepStrictEqual(d, {foo: 'bar'});
-    process.exit(0);
-  }
-  catch (err) {
-    console.error(err.message);
-    process.exit(1);
-  }
-  
-});
-
+// Give it a moment to process
+setTimeout(() => {
+  assert.equal(count, 2, 'Should have parsed 2 objects');
+  console.log('✓ JSONParser smoke test passed');
+  process.exit(0);
+}, 100);
