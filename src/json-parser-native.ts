@@ -4,6 +4,7 @@ import * as stream from 'node:stream';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import {createRequire} from 'node:module';
+import {Buffer} from 'node:buffer';
 
 import {RawJSONBytesSymbol, RawStringSymbol} from './symbols.js';
 
@@ -29,6 +30,16 @@ export interface JsonParserNativeOpts {
    * - >= 1: push at most N items per tick, then `setImmediate()` to continue
    */
   yieldEvery?: number;
+
+  /**
+   * Pass raw JSON strings as Buffer objects instead of parsing in C++.
+   * This reduces main thread work by letting V8's optimized JSON.parse() handle parsing.
+   * Useful when main thread is busy with other work.
+   * 
+   * **Default: true** (optimized mode enabled by default for best performance)
+   * Set to false to use C++ JSON parsing (slower but may be useful for debugging)
+   */
+  passRawBuffers?: boolean;
 }
 
 export interface NativeParserStats {
@@ -93,6 +104,11 @@ class JsonParserNativeReadable extends stream.Readable {
   private yielding = false;
   private drainScheduled = false;
   private yieldEvery = 0;
+  private passRawBuffers: boolean;
+  private wrapMetadata: boolean;
+  private includeRawString: boolean;
+  private includeByteCount: boolean;
+  private emitNonJSON: boolean;
 
   constructor(fd: number, opts: JsonParserNativeOpts = {}) {
     super({objectMode: true, highWaterMark: 16});
@@ -100,8 +116,16 @@ class JsonParserNativeReadable extends stream.Readable {
     const binding = loadNativeBinding();
     this.yieldEvery = Math.max(0, Number(opts.yieldEvery || 0) | 0);
 
+    // Default to optimized mode (passRawBuffers: true) for best performance
+    this.passRawBuffers = opts.passRawBuffers !== undefined ? opts.passRawBuffers : true;
+    this.wrapMetadata = opts.wrapMetadata === true;
+    this.includeRawString = opts.includeRawString === true;
+    this.includeByteCount = opts.includeByteCount === true;
+    this.emitNonJSON = opts.emitNonJSON === true; // Only true if explicitly enabled
+
     const nativeOpts = {
       ...opts,
+      passRawBuffers: this.passRawBuffers,
       // pass symbols so native can attach metadata with the *same* keys as the TS parser
       rawStringSymbol: RawStringSymbol,
       rawJsonBytesSymbol: RawJSONBytesSymbol
@@ -113,7 +137,53 @@ class JsonParserNativeReadable extends stream.Readable {
       }
 
       if (msg.type === 'data') {
-        this.pending.push(...msg.batch);
+        // If passRawBuffers is enabled, batch contains Buffer objects that need parsing
+        if (this.passRawBuffers) {
+          // Optimize: Parse directly, use Buffer's built-in JSON.parse support
+          // V8's JSON.parse can handle Buffer directly in some cases, but we need string
+          // Optimize by reusing string conversion
+          for (let i = 0; i < msg.batch.length; i++) {
+            const buf = msg.batch[i] as Buffer;
+            try {
+              // Try to minimize string allocation - but JSON.parse needs string
+              // Buffer.toString('utf8') is already optimized in V8
+              const str = buf.toString('utf8');
+              let parsed = JSON.parse(str);
+              
+              // Handle wrapMetadata if requested (same behavior as non-optimized mode)
+              if (this.wrapMetadata) {
+                const wrapped: any = { value: parsed };
+                if (this.includeRawString) {
+                  wrapped[RawStringSymbol] = str;
+                }
+                if (this.includeByteCount) {
+                  wrapped[RawJSONBytesSymbol] = buf.length;
+                }
+                parsed = wrapped;
+              } else {
+                // Attach metadata directly to parsed object if requested
+                if (this.includeRawString) {
+                  (parsed as any)[RawStringSymbol] = str;
+                }
+                if (this.includeByteCount) {
+                  (parsed as any)[RawJSONBytesSymbol] = buf.length;
+                }
+              }
+              
+              this.pending.push(parsed);
+            } catch (err) {
+              // Only emit 'string' event if emitNonJSON is explicitly enabled
+              // When passRawBuffers is true, invalid JSON is passed from native side
+              // and we validate it here with JSON.parse()
+              if (this.emitNonJSON) {
+                this.emit('string', buf.toString('utf8'));
+              }
+              // If emitNonJSON is false, silently skip invalid JSON (same behavior as non-optimized mode)
+            }
+          }
+        } else {
+          this.pending.push(...msg.batch);
+        }
         this.scheduleDrain();
         return;
       }
@@ -172,13 +242,24 @@ class JsonParserNativeReadable extends stream.Readable {
     const limit = this.yieldEvery > 0 ? this.yieldEvery : Number.POSITIVE_INFINITY;
     let pushed = 0;
 
-    while (this.pending.length > 0 && pushed < limit) {
-      const ok = this.push(this.pending[0]);
+    // Optimize: Use index instead of shift() for better performance
+    let startIdx = 0;
+    while (startIdx < this.pending.length && pushed < limit) {
+      const ok = this.push(this.pending[startIdx]);
       if (!ok) {
+        // Remove processed items
+        if (startIdx > 0) {
+          this.pending = this.pending.slice(startIdx);
+        }
         return;
       }
-      this.pending.shift();
+      startIdx++;
       pushed++;
+    }
+    
+    // Remove processed items
+    if (startIdx > 0) {
+      this.pending = this.pending.slice(startIdx);
     }
 
     if (this.pending.length > 0 && this.yieldEvery > 0) {

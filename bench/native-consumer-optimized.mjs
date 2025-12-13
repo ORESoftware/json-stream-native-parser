@@ -9,7 +9,7 @@ let count = 0;
 const s = createJsonParserNativeFromFd(0, {
   delimiter: '\n',
   batchSize: 2048,  // Maximum batch size for best performance
-  passRawBuffers: true  // Use optimized mode (same as native-optimized)
+  passRawBuffers: true  // Use optimized buffer mode
 });
 
 s.on('data', () => {
@@ -24,7 +24,6 @@ s.on('error', (err) => {
 s.on('end', () => {
   const t1 = process.hrtime.bigint();
   const ms = Number(t1 - t0) / 1e6;
-  process.stdout.write(JSON.stringify({impl: 'native', count, ms}) + '\n');
+  process.stdout.write(JSON.stringify({impl: 'native-optimized', count, ms}) + '\n');
 });
-
 

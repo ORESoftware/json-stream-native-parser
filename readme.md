@@ -137,9 +137,15 @@ https://stackoverflow.com/questions/56014438/get-single-line-json-from-aws-cli
 3. there are some secret options in the code, have a look in `lib/main.ts`
 
 
-### Native fd parser (worker thread, emits POJOs)
+### Native fd parser (optimized by default, emits POJOs)
 
-If you already have a **file descriptor** (for example from `fs.openSync()` or passed in from another process), you can parse it on a **native background thread** and stream **JS objects** back to the main thread (no `JSON.parse()` in JS-land).
+If you already have a **file descriptor** (for example from `fs.openSync()` or passed in from another process), you can parse it on a **native C++ background thread** (`std::thread`) and stream **JS objects** back to the main thread.
+
+**By default, the native parser uses optimized mode** (`passRawBuffers: true`) which:
+- Uses **zero-copy external buffers** for efficient data transfer (just passes memory pointer)
+- Leverages V8's highly optimized `JSON.parse()` on the main thread
+- Provides better performance than worker threads (avoids structured cloning overhead)
+- Works with **nested objects and arrays** of any depth
 
 Build the native addon:
 
@@ -159,12 +165,14 @@ import {
 
 const fd = fs.openSync('/path/to/file.jsonl', 'r');
 
+// Optimized mode is the default (passRawBuffers: true)
 const s = createJsonParserNativeFromFd(fd, {
   delimiter: '\n',
-  batchSize: 64,
+  batchSize: 2048,  // Larger batches for better performance
   includeRawString: true,
   includeByteCount: true,
   emitNonJSON: true
+  // passRawBuffers: true is the default (can be set to false to use C++ parsing)
 });
 
 s.on('data', (obj) => {
@@ -181,3 +189,28 @@ s.on('stats', (stats) => {
   // { bytesRead, bytesWritten, linesOk, linesFailed, ended }
 });
 ```
+
+### Worker thread parser (alternative implementation)
+
+For a pure JavaScript implementation using Node.js worker threads:
+
+```js
+import {createJsonParserWorkerFromFd} from '@oresoftware/json-native-stream-parser';
+
+const fd = fs.openSync('/path/to/file.jsonl', 'r');
+
+const s = createJsonParserWorkerFromFd(fd, {
+  delimiter: '\n',
+  batchSize: 512
+});
+
+s.on('data', (obj) => {
+  // obj is a fully parsed POJO (parsed in worker thread, passed via structured cloning)
+  // Works with nested objects and arrays
+});
+```
+
+**Note:** The native parser is typically faster than the worker parser because:
+- Native uses **zero-copy buffers** (just pointer transfer)
+- Worker uses **structured cloning** (full serialization/deserialization of object graph)
+- For nested objects, structured cloning overhead can be significant

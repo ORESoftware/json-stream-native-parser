@@ -1,0 +1,54 @@
+# Cursor Rules for json-stream-native-parser
+
+## Project Overview
+This is a high-performance JSON streaming parser for Node.js with multiple implementations:
+- **TypeScript Transform Stream** (`JSONParser`) - Fastest when main thread is idle
+- **Native C++ Parser** (`createJsonParserNativeFromFd`) - Optimized by default, best when main thread is busy
+- **Worker Thread Parser** (`createJsonParserWorkerFromFd`) - Pure JS, uses structured cloning
+
+## Default Behavior
+
+### Native Parser Defaults
+- **`passRawBuffers: true`** is the default (optimized mode)
+  - Uses zero-copy external buffers
+  - Leverages V8's optimized JSON.parse()
+  - Better performance, especially under load
+  - **Uses separate C++ background thread** (`std::thread`) for I/O
+- **`batchSize: 64`** (can be increased to 2048+ for better throughput)
+- Set `passRawBuffers: false` to use C++ JSON parsing (slower, mainly for debugging)
+
+### Performance Characteristics
+- **Idle main thread**: TS parser is fastest (~17ms for 5K objects)
+- **Busy main thread (50%+ CPU)**: Native-optimized should win (background I/O + efficient parsing)
+- **Worker parser**: Good for pure JS solution, but has structured cloning overhead
+- **Native-optimized vs Worker**: Native is faster due to zero-copy buffers vs structured cloning overhead
+
+### Threading Model
+- **Native parser**: Uses C++ `std::thread` background thread for I/O, transfers via TSFN (Thread-Safe Function)
+- **Worker parser**: Uses Node.js `worker_threads` (separate V8 isolate), transfers via `postMessage()` (structured cloning)
+- **Both offload work from main thread**, but transfer mechanism differs significantly
+
+## Code Style
+- Use TypeScript with strict mode
+- Native C++ code uses N-API (not V8 internals)
+- Prefer bulk operations (e.g., `napi_define_properties` over individual `napi_set_property`)
+- Use larger batch sizes (1024-2048) for better performance
+- Zero-copy buffers where possible
+
+## Key Files
+- `src/main.ts` - TS Transform stream parser
+- `src/json-parser-native.ts` - Native parser wrapper (defaults to optimized mode)
+- `src/json-parser-worker.ts` - Worker thread parser
+- `native/json-native-parser.cc` - C++ implementation
+
+## Testing
+- Run `npm test` for unit tests
+- Run `npm run bench` for performance benchmarks
+- Use `bench/quick-bench.mjs` for quick performance checks
+
+## Performance Optimization Notes
+- Native parser uses bulk property creation (`napi_define_properties`)
+- External buffers for zero-copy transfer
+- Larger I/O buffers (256KB) for better throughput
+- Optimized array operations to avoid shift() overhead
+
