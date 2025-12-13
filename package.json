@@ -1,0 +1,51 @@
+{
+  "name": "@oresoftware/json-native-stream-parser",
+  "version": "1.0.1",
+  "description": "Parse JSON streams into JS objects using native JSON.parse() and JSON.stringify() methods.",
+  "type": "module",
+  "main": "./dist/main.js",
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "import": "./dist/main.js",
+      "require": "./dist/cjs/main.js",
+      "default": "./dist/main.js"
+    }
+  },
+  "bin": {
+    "json_parser": "cli/json-parser.js"
+  },
+  "types": "./dist/main.d.ts",
+  "typings": "./dist/main.d.ts",
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs",
+    "build:esm": "tsc -p tsconfig.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json && node scripts/prep-cjs.mjs",
+    "build:native": "node-gyp rebuild",
+    "test": "npm run build && node test/run.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ORESoftware/json-native-stream-parser.git"
+  },
+  "keywords": [
+    "typescript",
+    "library",
+    "skeleton",
+    "scaffold"
+  ],
+  "author": "Olegzandr von Denman",
+  "license": "SEE LICENSE IN license.md",
+  "bugs": {
+    "url": "https://github.com/ORESoftware/json-native-stream-parser/issues"
+  },
+  "homepage": "https://github.com/ORESoftware/json-native-stream-parser#readme",
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  },
+  "r2g": {
+    "test": "node .r2g/tests/smoke-test.1.js"
+  }
+}
