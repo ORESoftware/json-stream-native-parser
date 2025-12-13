@@ -14,7 +14,8 @@
 | Branch | TS Parser (ms) | Native Parser (ms) | Native vs TS | Notes |
 |--------|----------------|-------------------|--------------|-------|
 | **main** | 5.52 | 12.60 | **0.44x** (slower) | Native parser is 2.3x slower than TS |
-| **dev** | 5.57 | **70.96** | **0.08x** (much slower) | Native parser is **12.7x slower** than TS - **CRITICAL PERFORMANCE REGRESSION** |
+| **dev** (before fix) | 5.57 | **70.96** | **0.08x** (much slower) | Native parser was 12.7x slower - had memory bug |
+| **dev** (after fix) | 5.50 | **13.51** | **0.41x** (slower) | Native parser is 2.5x slower than TS - **FIXED!** Now comparable to main |
 
 ### Key Differences
 
@@ -61,31 +62,37 @@
 
 #### 4. Code Quality Issues
 
-**dev branch has critical bugs:**
+**dev branch (FIXED):**
 
-1. **External Buffer Lifetime Bug** (uncommitted fix):
-   - `napi_create_external_buffer` called with `nullptr` finalizer
-   - Comment claims "unique_ptr manages lifetime" but this is incorrect
-   - Memory can be freed while JavaScript still holds references
-   - **Location**: `native/json-native-parser.cc:559`
+1. ✅ **External Buffer Lifetime Bug** - **FIXED in latest commit**:
+   - Now uses proper finalizer: `finalize_external_buffer`
+   - Memory ownership transferred correctly with `it.external_data.release()`
+   - Buffer lifetime properly managed by V8
+   - **Fixed in**: commit `032a8ac`
 
-2. **Performance Regression**:
-   - "Optimized mode" is actually 5.6x slower than main branch
-   - Suggests the passRawBuffers approach has fundamental issues
-   - May be due to:
-     - Buffer allocation overhead
-     - String conversion overhead (`buf.toString('utf8')`)
-     - Multiple JSON.parse() calls on main thread
+2. ✅ **Performance Regression** - **FIXED**:
+   - Before fix: 70.96ms (12.7x slower than TS)
+   - After fix: 13.51ms (2.5x slower than TS)
+   - Now comparable to main branch (12.60ms)
+   - The fix improved performance by **5.2x**!
 
-## Recommendation
+## Recommendation (UPDATED)
 
-### **Use main branch as the base**
+### **Both branches are now viable, but dev has advantages:**
 
-**Reasons:**
+**dev branch (after fixes):**
 1. ✅ **Correctness**: All tests pass reliably
-2. ✅ **Performance**: Native parser is 5.6x faster than dev
+2. ✅ **Performance**: Native parser now comparable to main (13.51ms vs 12.60ms)
+3. ✅ **Memory Safety**: External buffer lifetime properly managed
+4. ✅ **Modern Build System**: Fallback chain for build tools
+5. ✅ **Worker Parser**: Additional pure JS option
+6. ⚠️ **Build Reliability**: Still needs `build:native:gyp` for reliable builds
+
+**main branch:**
+1. ✅ **Correctness**: All tests pass reliably
+2. ✅ **Performance**: Native parser = 12.60ms
 3. ✅ **Reliability**: Build system works consistently
-4. ✅ **API Completeness**: Has helper functions for common use cases
+4. ✅ **API Completeness**: Has helper functions (FromPath, FromStdin, FromSocket)
 5. ✅ **Production Ready**: No critical bugs
 
 ### **What to cherry-pick from dev:**
@@ -105,39 +112,50 @@
    - Architecture docs
    - But verify they're accurate
 
-### **What NOT to use from dev:**
+### **What's been fixed in dev:**
 
-1. ❌ **passRawBuffers "optimized" mode**:
-   - It's actually much slower
-   - Has memory management bugs
-   - The concept is sound but implementation needs work
+1. ✅ **passRawBuffers "optimized" mode**:
+   - Memory management bug fixed (proper finalizer)
+   - Performance now comparable to main (13.51ms vs 12.60ms)
+   - Implementation is now correct
 
-2. ❌ **Current build script behavior**:
-   - Doesn't reliably build
-   - Misleading success messages
+2. ⚠️ **Build script behavior**:
+   - Still needs `build:native:gyp` for reliable builds
+   - But the fallback chain is a good idea
 
-## Action Plan
+## Action Plan (UPDATED)
 
-1. **Stay on main branch** for production
-2. **Cherry-pick worker parser** from dev (already fixed)
-3. **Fix build script** if keeping it (ensure it actually builds)
-4. **Investigate passRawBuffers** separately if needed:
-   - Profile to find bottlenecks
-   - Fix memory management
-   - Re-benchmark before considering merge
+1. **dev branch is now viable** - memory bug fixed, performance fixed
+2. **Consider merging dev → main** with these additions:
+   - Worker parser (pure JS option)
+   - Modern build script (with fixes)
+   - passRawBuffers mode (now working correctly)
+3. **Cherry-pick from main to dev**:
+   - Helper APIs (FromPath, FromStdin, FromSocket)
+   - Reliable build behavior
+4. **Fix build script** in dev:
+   - Ensure `build:native` actually builds correctly
+   - Or document that `build:native:gyp` is required
 
-## Performance Analysis
+## Performance Analysis (UPDATED)
 
-The dev branch's "optimized mode" is slower because:
+**After the fix, dev branch performance is now comparable to main:**
+
+The fix (proper buffer finalizer) improved performance from 70.96ms → 13.51ms (5.2x faster!)
+
+**Why dev is still slightly slower (13.51ms vs 12.60ms):**
 - Each buffer requires `buf.toString('utf8')` conversion
 - Each buffer requires separate `JSON.parse()` call
 - No batching optimization for JSON.parse
-- Buffer allocation overhead in C++
-- String allocation overhead in JS
+- Small overhead from buffer/string conversions
 
-The main branch's approach (C++ parsing + N-API construction) is faster because:
+**Why main is slightly faster (12.60ms vs 13.51ms):**
 - Single pass through data
 - Bulk property setting via `napi_define_properties`
 - Less string allocation
 - Better memory locality
+
+**Conclusion**: The performance difference is now minimal (~7% slower), and both approaches are viable. The choice depends on:
+- **dev**: Better for when you want I/O off-thread but JSON.parse on main thread (may be better under CPU load)
+- **main**: Better for pure throughput when main thread is idle
 
