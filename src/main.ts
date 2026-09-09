@@ -2,6 +2,7 @@
 
 import * as stream from 'stream';
 import * as assert from 'node:assert/strict';
+import {StringDecoder} from 'node:string_decoder';
 
 import {RawStringSymbol, RawJSONBytesSymbol, JSONBytesSymbol} from './symbols.js';
 export {RawStringSymbol, RawJSONBytesSymbol, JSONBytesSymbol};
@@ -53,6 +54,7 @@ export class JSONParser<T = any> extends stream.Transform {
   delay = false;
   count = 1;
   wrapMetadata = false;
+  decoder = new StringDecoder('utf8');
   
   constructor(opts ?: JSONParserOpts) {
     super({objectMode: true, highWaterMark: 1});
@@ -189,19 +191,24 @@ export class JSONParser<T = any> extends stream.Transform {
   }
   
   _transform(chunk: any, encoding: string, cb: EVCb<void>) {
+    const bytes = Buffer.isBuffer(chunk)
+      ? chunk
+      : ArrayBuffer.isView(chunk)
+        ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+        : Buffer.from(String(chunk ?? ''), encoding && encoding !== 'buffer' ? encoding as BufferEncoding : 'utf8');
     
     if (this.isTrackBytesRead) {
-      this.jpBytesRead += chunk.length;
+      this.jpBytesRead += bytes.length;
     }
     
-    let data = String(chunk || '');
+    let data = this.decoder.write(bytes);
     
     if (this.lastLineData) {
       data = this.lastLineData + data;
     }
     
     const lines = data.split(this.delimiter);
-    this.lastLineData = lines.pop();
+    this.lastLineData = lines.pop() || '';
     
     for (let l of lines) {
       
@@ -226,6 +233,10 @@ export class JSONParser<T = any> extends stream.Transform {
   }
   
   _flush(cb: Function) {
+    const decoderTail = this.decoder.end();
+    if (decoderTail) {
+      this.lastLineData += decoderTail;
+    }
     
     if (this.lastLineData) {
       this.handleJSON(this.lastLineData);

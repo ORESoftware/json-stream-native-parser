@@ -30,7 +30,7 @@
     "bench:latency": "npm run build && bash bench/latency.sh",
     "bench:load": "npm run build && bash bench/load.sh",
     "bench:compare-load": "npm run build && node bench/compare-load.mjs",
-    "test": "npm run build && node test/run.js"
+    "test": "npm run build && node test/run.js && node test/chunk-boundary.test.js"
   },
   "repository": {
     "type": "git",
